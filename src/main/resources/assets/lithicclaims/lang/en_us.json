@@ -1,0 +1,13 @@
+{
+  "itemGroup.lithicclaims": "Example Mod Tab",
+  "block.lithicclaims.example_block": "Example Block",
+  "item.lithicclaims.example_item": "Example Item",
+
+  "lithicclaims.configuration.title": "Lithic Claims Configs",
+  "lithicclaims.configuration.section.lithicclaims.common.toml": "Lithic Claims Configs",
+  "lithicclaims.configuration.section.lithicclaims.common.toml.title": "Lithic Claims Configs",
+  "lithicclaims.configuration.items": "Item List",
+  "lithicclaims.configuration.logDirtBlock": "Log Dirt Block",
+  "lithicclaims.configuration.magicNumberIntroduction": "Magic Number Text",
+  "lithicclaims.configuration.magicNumber": "Magic Number"
+}
