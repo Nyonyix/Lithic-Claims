@@ -8,15 +8,15 @@ import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.codec.StreamCodec;
 
-import java.util.Map;
+import java.util.List;
 
-public record ClaimAttachment(Map<BlockPos, Claim> activeClaims)
+public record ClaimAttachment(List<Claim> activeClaims)
 {
     public static final Codec<ClaimAttachment> CODEC = RecordCodecBuilder.create(i -> i.group(
-            Codec.unboundedMap(BlockPos.CODEC, Claim.CODEC).fieldOf("active_claims").forGetter(ClaimAttachment::activeClaims)
+            Codec.list(Claim.CODEC).fieldOf("active_claims").forGetter(ClaimAttachment::activeClaims)
     ).apply(i, ClaimAttachment::new));
 
     public static final StreamCodec<RegistryFriendlyByteBuf, ClaimAttachment> STREAM_CODEC = ByteBufCodecs.fromCodecWithRegistries(CODEC);
 
-    public static ClaimAttachment createDefault() {return new ClaimAttachment(Map.of());}
+    public static ClaimAttachment createDefault() {return new ClaimAttachment(List.of());}
 }

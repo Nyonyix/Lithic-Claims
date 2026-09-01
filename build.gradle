@@ -115,11 +115,12 @@ dependencies {
     // For all intends and purposes: You can treat this dependency as if it is a normal library you would use.
     implementation "net.neoforged:neoforge:${neo_version}"
 
+    implementation "${tfc_maven}"
+
     runtimeOnly "${ferrite_maven}"
     runtimeOnly "${sodium_maven}"
     runtimeOnly "${jei_maven}"
     runtimeOnly "${emi_maven}"
-    runtimeOnly "${tfc_maven}"
     runtimeOnly "${patchouli_maven}"
 
     // Example optional mod dependency with JEI

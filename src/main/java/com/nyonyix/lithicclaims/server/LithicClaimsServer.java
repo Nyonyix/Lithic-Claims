@@ -4,6 +4,7 @@ import com.nyonyix.lithicclaims.LithicClaims;
 import com.nyonyix.lithicclaims.data.LithicClaimsTags;
 import com.nyonyix.lithicclaims.data.datagen.lang.LithicClaimsLanguageProvider;
 import com.nyonyix.lithicclaims.data.datagen.tag.LithicClaimsBlockTagProvider;
+import com.nyonyix.lithicclaims.data.manager.ClaimManager;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
@@ -40,7 +41,7 @@ public class LithicClaimsServer
     @SubscribeEvent
     public static void onRightClickBlock(PlayerInteractEvent.RightClickBlock event)
     {
-        if (!event.getEntity().isShiftKeyDown()) return;
+//        if (!event.getEntity().isShiftKeyDown()) return;
         if (event.getLevel().isClientSide()) return;
         if (event.getHand() != InteractionHand.MAIN_HAND) return;
 
@@ -54,8 +55,8 @@ public class LithicClaimsServer
 
         if (state.is(LithicClaimsTags.Blocks.CLAIM_MARKERS))
         {
-            player.sendSystemMessage(Component.literal("Hello").withStyle(ChatFormatting.AQUA));
-            event.setCanceled(true);
+//            player.sendSystemMessage(Component.literal("Hello").withStyle(ChatFormatting.AQUA));
+            ClaimManager.trigger(level, event.getPos(), player);
         }
     }
 }

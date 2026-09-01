@@ -15,6 +15,7 @@ public class LithicClaimsLanguageProvider extends LanguageProvider
     protected void addTranslations()
     {
         add("lithicclaims.claim.overlap", "This position overlaps with an existing claim");
+        add("lithicclaims.claim.addMember", "You hav been added");
 
         add("lithicclaims.configuration.claim", "Claims");
         add("lithicclaims.configuration.claimArea", "Claim Area");
