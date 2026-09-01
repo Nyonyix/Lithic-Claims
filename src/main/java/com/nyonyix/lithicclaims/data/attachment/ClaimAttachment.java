@@ -2,7 +2,7 @@ package com.nyonyix.lithicclaims.data.attachment;
 
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
-import com.nyonyix.lithicclaims.data.records.Claim;
+import com.nyonyix.lithicclaims.data.record.Claim;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.ByteBufCodecs;

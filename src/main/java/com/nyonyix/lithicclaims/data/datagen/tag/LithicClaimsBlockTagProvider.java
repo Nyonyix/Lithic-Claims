@@ -1,4 +1,4 @@
-package com.nyonyix.lithicclaims.data.datagen;
+package com.nyonyix.lithicclaims.data.datagen.tag;
 
 import com.nyonyix.lithicclaims.LithicClaims;
 import com.nyonyix.lithicclaims.data.LithicClaimsTags;

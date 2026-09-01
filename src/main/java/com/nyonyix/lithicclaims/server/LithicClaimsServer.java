@@ -2,15 +2,14 @@ package com.nyonyix.lithicclaims.server;
 
 import com.nyonyix.lithicclaims.LithicClaims;
 import com.nyonyix.lithicclaims.data.LithicClaimsTags;
-import com.nyonyix.lithicclaims.data.datagen.LithicClaimsBlockTagProvider;
-import io.netty.util.concurrent.CompleteFuture;
+import com.nyonyix.lithicclaims.data.datagen.lang.LithicClaimsLanguageProvider;
+import com.nyonyix.lithicclaims.data.datagen.tag.LithicClaimsBlockTagProvider;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.data.DataGenerator;
 import net.minecraft.data.PackOutput;
 import net.minecraft.network.chat.Component;
-import net.minecraft.tags.BlockTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
@@ -34,6 +33,8 @@ public class LithicClaimsServer
         CompletableFuture<HolderLookup.Provider> provider = event.getLookupProvider();
 
         gen.addProvider(event.includeServer(), new LithicClaimsBlockTagProvider(packOutput, provider, event.getExistingFileHelper()));
+
+        gen.addProvider(event.includeClient(), new LithicClaimsLanguageProvider(packOutput));
     }
 
     @SubscribeEvent

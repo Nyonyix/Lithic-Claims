@@ -1,4 +1,4 @@
-package com.nyonyix.lithicclaims.data.records;
+package com.nyonyix.lithicclaims.data.record;
 
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
@@ -24,4 +24,6 @@ public record Claim(
             BlockPos.CODEC.fieldOf("location").forGetter(Claim::location),
             Codec.LONG.fieldOf("creation_calendar_tick").forGetter(Claim::creationCalendarTick)
     ).apply(i, Claim::new));
+
+    public static Claim createDefault() {return  new Claim(new AABB(0, 0, 0, 0, 0, 0), Team.createDefault(), BlockPos.ZERO, 0);}
 }
