@@ -54,6 +54,21 @@ public class LithicClaimsCommands
         }
     }
 
+    private static String parseInstant(Instant cooldown)
+    {
+        float stanceCooldownConfig = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
+        Instant cooldownEnd = cooldown.plusSeconds(Math.round(stanceCooldownConfig * 60 * 60));
+
+        Duration cooldownDiff = Duration.between(Instant.now(), cooldown.plusSeconds(Math.round(stanceCooldownConfig * 60 * 60)));
+        boolean ago = cooldownDiff.isNegative();
+        long total = Math.abs(cooldownDiff.toSeconds());
+        long h = total / 3600;
+        long m = (total % 3600) / 60;
+        long s = total % 60;
+        String time = String.format("%dh, %dm, %ds", h, m, s);
+        return ago ? time + " ago" : "until: " + time;
+    }
+
     private static int executeListClaims(CommandContext<CommandSourceStack> context)
     {
         try
@@ -440,14 +455,7 @@ public class LithicClaimsCommands
             float stanceCooldownConfig = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
             Instant cooldownEnd = oldTeam.stanceCooldown().plusSeconds(Math.round(stanceCooldownConfig * 60 * 60));
 
-            Duration cooldownDiff = Duration.between(Instant.now(), oldTeam.stanceCooldown().plusSeconds(Math.round(stanceCooldownConfig * 60 * 60)));
-            boolean ago = cooldownDiff.isNegative();
-            long total = Math.abs(cooldownDiff.toSeconds());
-            long h = total / 3600;
-            long m = (total % 3600) / 60;
-            long s = total % 60;
-            String time = String.format("%dh, %dm, %ds", h, m, s);
-            String result = ago ? time + " ago" : time + " until";
+            String result = parseInstant(oldTeam.stanceCooldown());
 
             if (Instant.now().isBefore(cooldownEnd))
             {
@@ -564,14 +572,7 @@ public class LithicClaimsCommands
             {
                 String leaderName = UsernameCache.containsUUID(team.leader()) ? UsernameCache.getLastKnownUsername(team.leader()) : "Unknown";
 
-                Duration cooldownDiff = Duration.between(Instant.now(), team.stanceCooldown().plusSeconds(Math.round(stanceCooldownConfig * 60 * 60)));
-                boolean ago = cooldownDiff.isNegative();
-                long total = Math.abs(cooldownDiff.toSeconds());
-                long h = total / 3600;
-                long m = (total % 3600) / 60;
-                long s = total % 60;
-                String time = String.format("%dh, %dm, %ds", h, m, s);
-                String result = ago ? time + " ago" : time + " until";
+                String result = parseInstant(team.stanceCooldown());
 
                 Component teamComponent = Component.literal("Team: \n").withStyle(ChatFormatting.AQUA)
                 .append(Component.literal("ID: ").withStyle(ChatFormatting.AQUA)
@@ -684,15 +685,7 @@ public class LithicClaimsCommands
 
             float stanceCooldownConfig = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
             Instant cooldownEnd = sourceTeam.stanceCooldown().plusSeconds(Math.round(stanceCooldownConfig * 60 * 60));
-
-            Duration cooldownDiff = Duration.between(Instant.now(), sourceTeam.stanceCooldown().plusSeconds(Math.round(stanceCooldownConfig * 60 * 60)));
-            boolean ago = cooldownDiff.isNegative();
-            long total = Math.abs(cooldownDiff.toSeconds());
-            long h = total / 3600;
-            long m = (total % 3600) / 60;
-            long s = total % 60;
-            String time = String.format("%dh, %dm, %ds", h, m, s);
-            String result = ago ? time + " ago" : time + " until";
+            String result = parseInstant(sourceTeam.stanceCooldown());
 
             if (Instant.now().isBefore(cooldownEnd))
             {
@@ -743,6 +736,7 @@ public class LithicClaimsCommands
         try
         {
             Team oldTeam = getTeamByNameOrUUID(context, "name | uuid");
+            float teamCooldownConfig = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
 
             if (oldTeam.id().equals(Team.ZERO_UUID))
             {
@@ -750,7 +744,9 @@ public class LithicClaimsCommands
                 return 0;
             }
 
-            Team newTeam = oldTeam.withStanceCooldown(Instant.now());
+            Instant newInstant = Instant.now().minusSeconds(Math.round(teamCooldownConfig * 60 * 60));
+
+            Team newTeam = oldTeam.withStanceCooldown(newInstant);
             TeamManager.saveAttachment(context.getSource().getLevel(), newTeam);
 
             context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.ResetSuccess", newTeam.name()), true);
@@ -839,14 +835,7 @@ public class LithicClaimsCommands
 
             String leaderName = UsernameCache.containsUUID(team.leader()) ? UsernameCache.getLastKnownUsername(team.leader()) : "Unknown";
 
-            Duration cooldownDiff = Duration.between(Instant.now(), team.stanceCooldown().plusSeconds(Math.round(stanceCooldownConfig * 60 * 60)));
-            boolean ago = cooldownDiff.isNegative();
-            long total = Math.abs(cooldownDiff.toSeconds());
-            long h = total / 3600;
-            long m = (total % 3600) / 60;
-            long s = total % 60;
-            String time = String.format("%dh, %dm, %ds", h, m, s);
-            String result = ago ? time + " ago" : time + " until";
+            String result = parseInstant(team.stanceCooldown());
 
             Component teamComponent = Component.literal("Team: \n").withStyle(ChatFormatting.AQUA)
             .append(Component.literal("ID: ").withStyle(ChatFormatting.AQUA)
@@ -963,8 +952,8 @@ public class LithicClaimsCommands
         teamCommand.then(teamCommandRelations.then(Commands.argument("name | uuid", StringArgumentType.string()).then(Commands.argument("stance", StringArgumentType.string()).executes(LithicClaimsCommands::executeTeamRelations))));
         teamCommand.then(teamCommandKick.then(Commands.argument("name | uuid", StringArgumentType.string()).then(Commands.argument("player", EntityArgument.player())).executes(LithicClaimsCommands::executeTeamKick)));
         teamCommand.then(teamCommandResetCooldown.then(Commands.argument("name | uuid", StringArgumentType.string()).executes(LithicClaimsCommands::executeTeamResetCooldown)));
-        teamCommand.then(teamCommandDisband.then(Commands.argument("name | uuid", StringArgumentType.string())).executes(LithicClaimsCommands::executeTeamDisband));
-        teamCommand.then(teamCommandInfo.executes(LithicClaimsCommands::executeTeamInfo));
+        teamCommand.then(teamCommandDisband.then(Commands.argument("name | uuid", StringArgumentType.string()).executes(LithicClaimsCommands::executeTeamDisband)));
+        teamCommand.then(teamCommandInfo.then(Commands.argument("name | uuid", StringArgumentType.string()).executes(LithicClaimsCommands::executeTeamInfo)));
         teamCommand.then(teamCommandList.executes(LithicClaimsCommands::executeListTeams));
         teamCommand.then(teamCommandLeave.executes(LithicClaimsCommands::executeTeamLeave));
 
