@@ -4,8 +4,8 @@ import com.mojang.serialization.Codec;
 
 public enum Stance
 {
-    INVALID,
-    PEACEFUL,
+    HOSTILE,
     NEUTRAL,
-    HOSTILE
+    PEACEFUL,
+    INVALID
 }

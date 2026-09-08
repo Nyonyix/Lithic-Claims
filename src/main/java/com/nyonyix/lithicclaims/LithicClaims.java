@@ -1,6 +1,7 @@
 package com.nyonyix.lithicclaims;
 
 import com.nyonyix.lithicclaims.data.attachment.LithicClaimsAttachments;
+import com.nyonyix.lithicclaims.server.ServerConfig;
 import org.slf4j.Logger;
 
 import com.mojang.logging.LogUtils;

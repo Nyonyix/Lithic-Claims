@@ -1,6 +1,6 @@
-package com.nyonyix.lithicclaims;
+package com.nyonyix.lithicclaims.client;
 
-import net.minecraft.client.Minecraft;
+import com.nyonyix.lithicclaims.LithicClaims;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModContainer;

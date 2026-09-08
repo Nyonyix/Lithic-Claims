@@ -1,9 +1,10 @@
 package com.nyonyix.lithicclaims.data.manager;
 
-import com.nyonyix.lithicclaims.ServerConfig;
+import com.nyonyix.lithicclaims.server.ServerConfig;
 import com.nyonyix.lithicclaims.data.Stance;
 import com.nyonyix.lithicclaims.data.attachment.ClaimAttachment;
 import com.nyonyix.lithicclaims.data.attachment.LithicClaimsAttachments;
+import com.nyonyix.lithicclaims.data.attachment.TeamAttachment;
 import com.nyonyix.lithicclaims.data.record.Claim;
 import com.nyonyix.lithicclaims.data.record.Team;
 import net.dries007.tfc.util.calendar.Calendars;
@@ -16,13 +17,14 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.fml.ModList;
 
-import java.util.*;;
+import java.time.Instant;
+import java.util.*;
 
 public class ClaimManager
 {
     private static boolean isProtected(Level level, Claim claim)
     {
-        Team team = claim.owner();
+        Team team = TeamManager.getTeam(level, claim.owner());
         float wanderDist = (float) ServerConfig.PROTECTION_MEMBER_DIST_WANDER.getAsDouble();
         float hostileDist = (float) ServerConfig.PROTECTION_MEMBER_DIST_HOSTILE.getAsDouble();
         float hostileClaimDist = (float) ServerConfig.PROTECTION_CLAIM_DIST_HOSTILE.getAsDouble();
@@ -48,64 +50,89 @@ public class ClaimManager
         return true;
     }
 
-    private static void addToActive(Level level, Claim claim)
+    public static Map<BlockPos, Claim> getActiveClaims(Level level)
     {
-        List<Claim> activeClaims = new ArrayList<>(getActiveClaims(level));
-        activeClaims.add(claim);
-        level.setData(LithicClaimsAttachments.CLAIM_ATTACHMENT, new ClaimAttachment(activeClaims));
-    }
-
-    public static void removeFromActive(Level level, Claim claim)
-    {
-        List<Claim> activeClaims = new ArrayList<>(getActiveClaims(level));
-        activeClaims.remove(claim);
-        level.setData(LithicClaimsAttachments.CLAIM_ATTACHMENT, new ClaimAttachment(activeClaims));
-    }
-
-    public static List<Claim> getActiveClaims(Level level)
-    {
-        List<Claim> active = level.getData(LithicClaimsAttachments.CLAIM_ATTACHMENT).activeClaims();
-        return active != null ? active : List.of();
+        Map<BlockPos, Claim> active = level.getData(LithicClaimsAttachments.CLAIM_ATTACHMENT).activeClaims();
+        return active != null ? active : Map.of();
     }
 
     public static Claim getClaim(Level level, BlockPos pos)
     {
-        for (Claim claim : level.getData(LithicClaimsAttachments.CLAIM_ATTACHMENT).activeClaims())
+        return getActiveClaims(level).getOrDefault(pos, Claim.createDefault());
+    }
+
+    public static Claim getClaimContains(Level level, BlockPos pos)
+    {
+        for (Claim claim : getActiveClaims(level).values())
         {
-            if (claim.location().equals(pos)) return claim;
+            if (claim.claimArea().contains(Vec3.atCenterOf(pos))) return claim;
         }
 
         return Claim.createDefault();
     }
 
+    public static void saveAttachment(Level level, Claim claim)
+    {
+        Map<BlockPos, Claim> activeClaims = new HashMap<>(getActiveClaims(level));
+        activeClaims.put(claim.location(), claim);
+        level.setData(LithicClaimsAttachments.CLAIM_ATTACHMENT, new ClaimAttachment(activeClaims));
+    }
+
+    public static void saveAttachment(Level level, Map<BlockPos, Claim> activeClaims)
+    {
+        level.setData(LithicClaimsAttachments.CLAIM_ATTACHMENT, new ClaimAttachment(activeClaims));
+    }
+
+    public static void removeClaim(Level level, BlockPos pos)
+    {
+        removeClaim(level, getClaim(level, pos));
+    }
+
+    public static void removeClaim(Level level, Claim claim)
+    {
+        Map<BlockPos, Claim> activeClaims = new HashMap<>(getActiveClaims(level));
+
+        activeClaims.remove(claim.location());
+        saveAttachment(level, activeClaims);
+    }
+
     public static void trigger(Level level, BlockPos pos, Player player)
     {
-        List<Claim> activeClaims = getActiveClaims(level);
+        Map<BlockPos, Claim> activeClaims = getActiveClaims(level);
         float claimArea = (float) ServerConfig.CLAIM_AREA.getAsDouble();
 
         if (!activeClaims.isEmpty())
         {
-            for (Claim claim : activeClaims)
+            for (Claim claim : activeClaims.values())
             {
                 if (claim.location().equals(pos))
                 {
                     if (isProtected(level, claim)) return;
-                    if (TeamManager.isInTeam(level, player.getUUID(), claim.owner().id())) return;
+                    if (TeamManager.isInTeam(level, player.getUUID(), claim.owner())) return;
 
-                    TeamManager.addMember(level, player.getUUID(), claim.owner().id());
+                    Map<UUID, Team> activeTeams = new HashMap<>(TeamManager.getActiveTeams(level));
+                    Team team = activeTeams.get(claim.owner());
+                    List<UUID> members = new ArrayList<>(team.members());
+                    members.add(player.getUUID());
+                    activeTeams.put(team.id(), team.withMembers(members));
+                    level.setData(LithicClaimsAttachments.TEAM_ATTACHMENT, new TeamAttachment(activeTeams));
+
                     player.displayClientMessage(Component.translatable("lithicclaims.claim.addMember").withStyle(ChatFormatting.DARK_GREEN), true);
                     return;
                 }
                 else if (Vec3.atCenterOf(claim.location()).distanceToSqr(Vec3.atCenterOf(pos)) <= claimArea * claimArea)
                 {
-                    player.displayClientMessage(Component.translatable("lithicclaims.claim.overlap").withStyle(ChatFormatting.DARK_RED), true);
+                    player.displayClientMessage(Component.translatable("lithicclaims.claim.overlap").withStyle(ChatFormatting.RED), true);
                     return;
                 }
             }
         }
 
         Team team = TeamManager.getTeamByPlayer(level, player.getUUID());
-        if (team.stance() == Stance.INVALID) team = TeamManager.newTeam(level, player.getUUID(), Stance.NEUTRAL, 0xFFFFFF);
+        if (team.stance() == Stance.INVALID)
+        {
+            team = TeamManager.createTeam(level, "New Auto Team", player, Stance.NEUTRAL, 0xFFFFFF);
+        }
 
         long calendarTicks = 0L;
         if (ModList.get().isLoaded("tfc"))
@@ -117,10 +144,34 @@ public class ClaimManager
         Vec3 min = new Vec3(pos.getX() - claimRadius, pos.getY() - claimRadius,pos.getZ() - claimRadius);
         Vec3 max = new Vec3(pos.getX() + claimRadius, pos.getY() + claimRadius, pos.getZ() + claimRadius);
 
-        Claim newClaim = new Claim(new AABB(min, max), team, pos, calendarTicks);
-        addToActive(level, newClaim);
+        Claim newClaim = new Claim(new AABB(min, max), team.id(), pos, calendarTicks);
+        saveAttachment(level, newClaim);
+        player.displayClientMessage(Component.translatable("lithicclaims.claim.createClaim").withStyle(ChatFormatting.DARK_GREEN), true);
 
-        TeamManager.addClaim(level, newClaim, team.id());
-        TeamManager.getTeam(level, team.id());
+        Map<UUID, Team> activeTeams = new HashMap<>(TeamManager.getActiveTeams(level));
+        List<Claim> ownedClaims = new ArrayList<>(team.ownedClaims());
+        ownedClaims.add(newClaim);
+        team = team.withOwnedClaims(ownedClaims);
+        activeTeams.put(team.id(), team);
+        level.setData(LithicClaimsAttachments.TEAM_ATTACHMENT, new TeamAttachment(activeTeams));
+    }
+
+    public static void claimCleanUp(Level level, BlockPos pos)
+    {
+        claimCleanUp(level, getClaim(level, pos));
+    }
+
+    public static void claimCleanUp(Level level, Claim claim)
+    {
+        Map<UUID, Team> activeTeams = new HashMap<>(TeamManager.getActiveTeams(level));
+        Team team = TeamManager.getTeam(level, claim.owner());
+        List<Claim> ownedClaims = new ArrayList<>(team.ownedClaims());
+
+        removeClaim(level, claim);
+        ownedClaims.remove(claim);
+        team = team.withOwnedClaims(ownedClaims);
+        activeTeams.put(team.id(), team);
+
+       TeamManager.saveAttachment(level, activeTeams);
     }
 }

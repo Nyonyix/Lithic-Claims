@@ -1,4 +1,4 @@
-package com.nyonyix.lithicclaims;
+package com.nyonyix.lithicclaims.server;
 
 import net.neoforged.neoforge.common.ModConfigSpec;
 
@@ -18,6 +18,15 @@ public class ServerConfig
     static
     {
         BUILDER.pop();
+        BUILDER.push("team");
+    }
+
+    public static final ModConfigSpec.DoubleValue TEAM_STANCE_COOLDOWN = BUILDER.comment("Team stance cooldown, How long should go by real world before changing stances").defineInRange("teamStanceCooldown", 6, 0.5, 24.0);
+
+
+    static
+    {
+        BUILDER.pop();
         BUILDER.push("protection");
     }
 
@@ -31,5 +40,5 @@ public class ServerConfig
         BUILDER.pop();
     }
 
-    static final ModConfigSpec SPEC = BUILDER.build();
+    public static final ModConfigSpec SPEC = BUILDER.build();
 }
