@@ -110,6 +110,8 @@ public class ClaimManager
                     if (isProtected(level, claim)) return;
                     if (TeamManager.isInTeam(level, player.getUUID(), claim.owner())) return;
 
+                    // Edge Case: Claim without team fails
+
                     Map<UUID, Team> activeTeams = new HashMap<>(TeamManager.getActiveTeams(level));
                     Team team = activeTeams.get(claim.owner());
                     List<UUID> members = new ArrayList<>(team.members());
@@ -131,7 +133,7 @@ public class ClaimManager
         Team team = TeamManager.getTeamByPlayer(level, player.getUUID());
         if (team.stance() == Stance.INVALID)
         {
-            team = TeamManager.createTeam(level, "New Auto Team", player, Stance.NEUTRAL, 0xFFFFFF);
+            team = TeamManager.createTeam(level, "New Team", player, Stance.NEUTRAL, 0xFFFFFF);
         }
 
         long calendarTicks = 0L;

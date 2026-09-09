@@ -41,5 +41,6 @@ public class LithicClaimsLanguageProvider extends LanguageProvider
         add("lithicclaims.command.team.modifyPermission", "You lack the permission to perform this action");
         add("lithicclaims.command.team.resetCooldownSuccess", "The stance cooldown for team %s has been reset: %s");
         add("lithicclaims.command.team.colour", "This");
+        add("lithicclaims.command.team.kicked", "You have been kicked from %s");
     }
 }

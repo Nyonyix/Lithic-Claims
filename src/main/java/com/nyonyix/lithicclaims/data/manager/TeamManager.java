@@ -194,6 +194,12 @@ public class TeamManager
        if (team.members().size() <= 1)
        {
            teamCleanUp(level, team);
+           return;
+       }
+
+       if (team.leader().equals(playerUUID))
+       {
+           team = team.withLeader(team.members().getFirst());
        }
 
        List<UUID> members = new ArrayList<>(team.members());
