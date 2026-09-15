@@ -3,6 +3,7 @@ package com.nyonyix.lithicclaims.data.record;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import com.nyonyix.lithicclaims.data.Stance;
+import net.minecraft.core.BlockPos;
 import net.minecraft.util.ExtraCodecs;
 
 import java.time.Instant;
@@ -15,7 +16,7 @@ public record Team(
         UUID id,
         UUID leader,
         String name,
-        List<Claim> ownedClaims,
+        List<BlockPos> ownedClaims,
         List<UUID> members,
         Map<UUID, Stance> relations,
         Stance stance,
@@ -30,7 +31,7 @@ public record Team(
             UUID_CODEC.fieldOf("id").forGetter(Team::id),
             UUID_CODEC.fieldOf("leader").forGetter(Team::leader),
             Codec.STRING.fieldOf("name").forGetter(Team::name),
-            Codec.list(Claim.CODEC).fieldOf("owned_claims").forGetter(Team::ownedClaims),
+            Codec.list(BlockPos.CODEC).fieldOf("owned_claims").forGetter(Team::ownedClaims),
             Codec.list(UUID_CODEC).fieldOf("members").forGetter(Team::members),
             Codec.unboundedMap(UUID_CODEC, Codec.STRING.xmap(name -> Enum.valueOf(Stance.class, name), Enum::name)).fieldOf("relations").forGetter(Team::relations),
             Codec.STRING.xmap(name -> Enum.valueOf(Stance.class, name.toUpperCase(Locale.ROOT)), Enum::name).fieldOf("stance").forGetter(Team::stance),
@@ -42,7 +43,7 @@ public record Team(
     public Team withId(UUID id) {return new Team(id, this.leader, this.name, this.ownedClaims, this.members, this.relations, this.stance, this.colour, this.stanceCooldown);}
     public Team withLeader(UUID leader) {return new Team(this.id, leader, this.name, this.ownedClaims, this.members, this.relations, this.stance, this.colour, this.stanceCooldown);}
     public Team withName(String name) {return new Team(this.id, this.leader, name, this.ownedClaims, this.members, this.relations, this.stance, this.colour, this.stanceCooldown);}
-    public Team withOwnedClaims(List<Claim> ownedClaims) {return new Team(this.id, this.leader, this.name, ownedClaims, this.members, this.relations, this.stance, this.colour, this.stanceCooldown);}
+    public Team withOwnedClaims(List<BlockPos> ownedClaims) {return new Team(this.id, this.leader, this.name, ownedClaims, this.members, this.relations, this.stance, this.colour, this.stanceCooldown);}
     public Team withMembers(List<UUID> members) {return new Team(this.id, this.leader, this.name, this.ownedClaims, members, this.relations, this.stance, this.colour, this.stanceCooldown);}
     public Team withRelations(Map<UUID, Stance> relations) {return new Team(this.id, this.leader, this.name, this.ownedClaims, this.members, relations, this.stance, this.colour, this.stanceCooldown);}
     public Team withStance(Stance stance) {return new Team(this.id, this.leader, this.name, this.ownedClaims, this.members, this.relations, stance, this.colour, this.stanceCooldown);}

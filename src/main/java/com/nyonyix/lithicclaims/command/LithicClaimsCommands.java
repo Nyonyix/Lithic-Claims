@@ -206,6 +206,7 @@ public class LithicClaimsCommands
             Team team = getTeamByNameOrUUID(context, "name | uuid");
             Level level = context.getSource().getLevel();
             Claim claim = ClaimManager.getClaimContains(level, pos);
+            Team oldTeam = TeamManager.getTeam(level, claim.owner());
 
             if (claim.owner().equals(Team.ZERO_UUID))
             {
@@ -223,8 +224,17 @@ public class LithicClaimsCommands
                 return 0;
             }
 
+            List<BlockPos> newOwnedClaims = new ArrayList<>(team.ownedClaims());
+            List<BlockPos> oldOwnedClaims = new ArrayList<>(oldTeam.ownedClaims());
+            newOwnedClaims.add(claim.location());
+            oldOwnedClaims.remove(claim.location());
+
             claim = claim.withOwner(team.id());
+            Team newTeam = team.withOwnedClaims(newOwnedClaims);
+            Team newOldTeam = oldTeam.withOwnedClaims(oldOwnedClaims);
             ClaimManager.saveAttachment(level, claim);
+            TeamManager.saveAttachment(level, newTeam);
+            TeamManager.saveAttachment(level, newOldTeam);
 
             context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.claim.modifyOwnerSuccess", team.name(), pos.toShortString()), true);
             return 1;
@@ -249,6 +259,7 @@ public class LithicClaimsCommands
             if (oldClaim.owner().equals(Team.ZERO_UUID))
             {
                 context.getSource().sendFailure(Component.translatable("lithicclaims.command.claim.noClaimFound", pos.toShortString()));
+                return 0;
             }
 
             pos = oldClaim.location();
@@ -419,7 +430,7 @@ public class LithicClaimsCommands
                     Team newTeam = oldTeam.withName(StringArgumentType.getString(context, "name"));
                     TeamManager.saveAttachment(context.getSource().getLevel(), newTeam);
 
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.commands.team.modifyNameSuccess", newTeam.name(), oldTeam.name()), true);
+                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.modifyNameSuccess", newTeam.name(), oldTeam.name()), true);
                     return 1;
                 }
                 else
@@ -482,7 +493,7 @@ public class LithicClaimsCommands
                 {
                     TeamManager.changeTeamStance(level, oldTeam, stance);
 
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.commands.team.modifyStanceSuccess", stance.toString(), oldTeam.name()), true);
+                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.modifyStanceSuccess", stance.toString(), oldTeam.name()), true);
                     return 1;
                 }
                 else
@@ -536,7 +547,7 @@ public class LithicClaimsCommands
                     Team newTeam = oldTeam.withColour(colour);
                     TeamManager.saveAttachment(level, newTeam);
 
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.commands.team.modifyColourSuccess", Component.translatable("lithicclaims.command.team.colour").withColor(newTeam.colour()), oldTeam.name()), true);                    return 1;
+                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.modifyColourSuccess", Component.translatable("lithicclaims.command.team.colour").withColor(newTeam.colour()), oldTeam.name()), true);                    return 1;
                 }
                 else
                 {
@@ -784,11 +795,7 @@ public class LithicClaimsCommands
                 Player sourcePlayer = context.getSource().getPlayerOrException();
                 if (TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) && TeamManager.getLeaderUUID(level, oldTeam.id()).equals(sourcePlayer.getUUID()))
                 {
-                    List<UUID> members = new ArrayList<>(oldTeam.members());
-                    members.remove(player.getUUID());
-
-                    Team newTeam = oldTeam.withMembers(members);
-                    TeamManager.saveAttachment(level, newTeam);
+                    TeamManager.removeMember(level, player.getUUID());
 
                     context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.modifyKickSuccess", oldTeam.name()), true);
                     player.displayClientMessage(Component.translatable("lithicclaims.command.team.kicked", oldTeam.name()).withStyle(ChatFormatting.RED), true);
@@ -801,13 +808,9 @@ public class LithicClaimsCommands
                 }
                 else if ((!TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) || !oldTeam.leader().equals(sourcePlayer.getUUID())) && context.getSource().hasPermission(Commands.LEVEL_GAMEMASTERS))
                 {
-                    List<UUID> members = new ArrayList<>(oldTeam.members());
-                    members.remove(player.getUUID());
+                    TeamManager.removeMember(level, player.getUUID());
 
-                    Team newTeam = oldTeam.withMembers(members);
-                    TeamManager.saveAttachment(level, newTeam);
-
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.commands.team.modifyKickSuccess", oldTeam.name()), true);
+                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.modifyKickSuccess", oldTeam.name()), true);
                     player.displayClientMessage(Component.translatable("lithicclaims.command.team.kicked", oldTeam.name()).withStyle(ChatFormatting.RED), true);
                     return 1;
                 }
@@ -902,7 +905,7 @@ public class LithicClaimsCommands
                 else if (!TeamManager.isInTeam(level, sourcePlayer.getUUID(), team.id()) && context.getSource().hasPermission(Commands.LEVEL_GAMEMASTERS))
                 {
                     TeamManager.teamCleanUp(level, team);
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.commands.team.removeSuccess", team.name()), true);
+                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.removeSuccess", team.name()), true);
                     return 1;
                 }
                 else

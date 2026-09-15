@@ -11,6 +11,7 @@ import com.nyonyix.lithicclaims.data.datagen.lang.LithicClaimsLanguageProvider;
 import com.nyonyix.lithicclaims.data.datagen.tag.LithicClaimsBlockTagProvider;
 import com.nyonyix.lithicclaims.data.manager.ClaimManager;
 import com.nyonyix.lithicclaims.data.manager.TeamManager;
+import com.nyonyix.lithicclaims.data.record.Claim;
 import com.nyonyix.lithicclaims.data.record.Team;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
@@ -82,6 +83,10 @@ public class LithicClaimsServer
         Level level = event.getPlayer().level();
         BlockPos pos = event.getPos();
         BlockState state =level.getBlockState(pos);
+        Claim claim = ClaimManager.getClaimContains(level, pos);
+
+        if (!claim.owner().equals(Team.ZERO_UUID))
+        {}
 
         if (state.is(LithicClaimsTags.Blocks.CLAIM_MARKERS))
         {
@@ -89,18 +94,24 @@ public class LithicClaimsServer
         }
     }
 
+    @SubscribeEvent
     public static void onExplosionDetonate(ExplosionEvent.Detonate event)
     {
-        LOGGER.info(event.getExplosion().getIndirectSourceEntity().toString());
-
         for (BlockPos pos : event.getAffectedBlocks())
         {
-            ClaimManager.claimCleanUp(event.getLevel(), pos);
+            if (event.getLevel().getBlockState(pos).is(LithicClaimsTags.Blocks.CLAIM_MARKERS))
+            {
+                ClaimManager.claimCleanUp(event.getLevel(), pos);
+            }
         }
+
+        // Entity Protection
+        event.getAffectedEntities().forEach(e -> {});
 
         //Block Protections
     }
 
+    @SubscribeEvent
     public static void onAttackEntityEvent(AttackEntityEvent event)
     {
         if (event.getTarget() instanceof Player)

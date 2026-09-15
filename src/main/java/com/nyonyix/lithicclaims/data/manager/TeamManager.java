@@ -4,11 +4,13 @@ import com.mojang.logging.LogUtils;
 import com.nyonyix.lithicclaims.data.Stance;
 import com.nyonyix.lithicclaims.data.attachment.LithicClaimsAttachments;
 import com.nyonyix.lithicclaims.data.attachment.TeamAttachment;
+import com.nyonyix.lithicclaims.data.record.Claim;
 import com.nyonyix.lithicclaims.data.record.Team;
 import com.nyonyix.lithicclaims.server.ServerConfig;
 import com.sun.jna.platform.win32.WinDef;
 import net.minecraft.ChatFormatting;
 import net.minecraft.advancements.critereon.BrewedPotionTrigger;
+import net.minecraft.core.BlockPos;
 import net.minecraft.data.PackOutput;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
@@ -177,6 +179,11 @@ public class TeamManager
             }
         }
 
+        for (BlockPos claimLocation : team.ownedClaims())
+        {
+            ClaimManager.claimCleanUp(level, claimLocation);
+        }
+
         activeTeams.remove(team.id());
         saveAttachment(level, activeTeams);
     }
@@ -197,16 +204,16 @@ public class TeamManager
            return;
        }
 
-       if (team.leader().equals(playerUUID))
-       {
-           team = team.withLeader(team.members().getFirst());
-       }
+        List<UUID> members = new ArrayList<>(team.members());
+        members.remove(playerUUID);
 
-       List<UUID> members = new ArrayList<>(team.members());
-       members.remove(playerUUID);
-       team = team.withMembers(members);
+        if (team.leader().equals(playerUUID))
+        {
+            team = team.withLeader(members.getFirst());
+        }
 
-       saveAttachment(level, team);
+        team = team.withMembers(members);
+        saveAttachment(level, team);
     }
 
     public static void changeTeamStance(Level level, Team team, Stance stance)
