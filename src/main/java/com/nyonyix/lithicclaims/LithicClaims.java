@@ -1,5 +1,6 @@
 package com.nyonyix.lithicclaims;
 
+import com.nyonyix.lithicclaims.command.arguments.LithicClaimsArgumentTypes;
 import com.nyonyix.lithicclaims.data.attachment.LithicClaimsAttachments;
 import com.nyonyix.lithicclaims.server.ServerConfig;
 import org.slf4j.Logger;
@@ -22,5 +23,6 @@ public class LithicClaims
         modContainer.registerConfig(ModConfig.Type.SERVER, ServerConfig.SPEC);
 
         LithicClaimsAttachments.ATTACHMENTS.register(modEventBus);
+        LithicClaimsArgumentTypes.ARGUMENT_TYPES.register(modEventBus);
     }
 }

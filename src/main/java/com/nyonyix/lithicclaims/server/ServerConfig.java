@@ -14,6 +14,7 @@ public class ServerConfig
     }
 
     public static final ModConfigSpec.DoubleValue CLAIM_AREA = BUILDER.comment("Claim Area, Area of the claim rectangle around the marker").defineInRange("claimArea", 32.0, 8.0, 64.0);
+    public static final ModConfigSpec.IntValue ADD_MEMBER_TIMEOUT = BUILDER.comment("Member add timeout, How long in ticks does the marker wait for a member before timeout").defineInRange("addMemberTimeout", 300, 100, 1200);
 
     static
     {
@@ -21,7 +22,7 @@ public class ServerConfig
         BUILDER.push("team");
     }
 
-    public static final ModConfigSpec.DoubleValue TEAM_STANCE_COOLDOWN = BUILDER.comment("Team stance cooldown, How long should go by real world before changing stances").defineInRange("teamStanceCooldown", 6, 0.5, 24.0);
+    public static final ModConfigSpec.DoubleValue TEAM_STANCE_COOLDOWN = BUILDER.comment("Team stance cooldown, How long should hours go by real world before changing stances").defineInRange("teamStanceCooldown", 6, 0.5, 24.0);
 
 
     static

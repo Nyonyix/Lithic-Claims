@@ -2,19 +2,16 @@ package com.nyonyix.lithicclaims.data.manager;
 
 import com.mojang.logging.LogUtils;
 import com.nyonyix.lithicclaims.data.Stance;
+import com.nyonyix.lithicclaims.data.StanceChange;
 import com.nyonyix.lithicclaims.data.attachment.LithicClaimsAttachments;
 import com.nyonyix.lithicclaims.data.attachment.TeamAttachment;
 import com.nyonyix.lithicclaims.data.record.Claim;
 import com.nyonyix.lithicclaims.data.record.Team;
 import com.nyonyix.lithicclaims.server.ServerConfig;
-import com.sun.jna.platform.win32.WinDef;
 import net.minecraft.ChatFormatting;
-import net.minecraft.advancements.critereon.BrewedPotionTrigger;
 import net.minecraft.core.BlockPos;
-import net.minecraft.data.PackOutput;
-import net.minecraft.network.chat.ClickEvent;
+import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.network.chat.Component;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
@@ -100,9 +97,7 @@ public class TeamManager
             name = suffix.isEmpty() ? prefix + "1" : prefix + (Long.parseLong(suffix) + 1);
         }
 
-        Team team = new Team(teamUUID, playerUUID, name, List.of(), members, Map.of(), stance, colour, Instant.now());
-        player.displayClientMessage(Component.translatable("lithicclaims.team.createTeam", name).withStyle(ChatFormatting.GREEN), true);
-
+        Team team = new Team(teamUUID, playerUUID, name, List.of(), members, stance, colour, Instant.now());
         return team;
     }
 
@@ -169,16 +164,6 @@ public class TeamManager
         if (activeTeams.isEmpty()) return;
         if (team.id().equals(Team.ZERO_UUID)) return;
 
-        for (Team forTeam : activeTeams.values())
-        {
-            if (forTeam.relations().containsKey(team.id()))
-            {
-                Map<UUID, Stance> newRelations = new HashMap<>(forTeam.relations());
-                newRelations.remove(team.id());
-                activeTeams.put(forTeam.id(), forTeam.withRelations(newRelations));
-            }
-        }
-
         for (BlockPos claimLocation : team.ownedClaims())
         {
             ClaimManager.claimCleanUp(level, claimLocation);
@@ -188,6 +173,30 @@ public class TeamManager
         saveAttachment(level, activeTeams);
     }
 
+    public static void addClaim(Level level, Team team, Claim claim)
+    {
+        List<BlockPos> claims = new ArrayList<>(team.ownedClaims());
+        claims.add(claim.location());
+        saveAttachment(level, team.withOwnedClaims(claims));
+    }
+
+    public static void addMember(Level level, Player player, Team team) {addMember(level, player.getUUID(), team.id());}
+
+    public static void addMember(Level level, UUID playerUUID, UUID teamUUID)
+    {
+        Team team = getTeam(level, teamUUID);
+        List<UUID> members = new ArrayList<>(team.members());
+
+        Team playerTeam = getTeamByPlayer(level, playerUUID);
+        if (!playerTeam.id().equals(Team.ZERO_UUID))
+        {
+            removeMember(level, playerUUID);
+        }
+
+        members.add(playerUUID);
+        saveAttachment(level, team.withMembers(members));
+    }
+
     public static void removeMember(Level level, Player player)
     {
         removeMember(level, player.getUUID());
@@ -195,8 +204,8 @@ public class TeamManager
 
     public static void removeMember(Level level, UUID playerUUID)
     {
-        Team team = getTeamByPlayer(level, playerUUID);
-        if (team.id().equals(Team.ZERO_UUID)) return;
+       Team team = getTeamByPlayer(level, playerUUID);
+       if (team.id().equals(Team.ZERO_UUID)) return;
 
        if (team.members().size() <= 1)
        {
@@ -216,68 +225,50 @@ public class TeamManager
         saveAttachment(level, team);
     }
 
-    public static void changeTeamStance(Level level, Team team, Stance stance)
+    public static StanceChange changeTeamStance(Level level, Team team, Stance stance)
     {
         float stanceCooldown = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
         Instant cooldownEnd = team.stanceCooldown().plusSeconds(Math.round(stanceCooldown * 60 * 60));
 
-        if (Instant.now().isBefore(cooldownEnd)) return;
+        if (Instant.now().isBefore(cooldownEnd)) return StanceChange.ON_COOLDOWN;
 
-        switch (team.stance())
+        if (team.stance() == Stance.NEUTRAL)
         {
-            case NEUTRAL ->
-            {
-                team = team.withStance(stance).withStanceCooldown(Instant.now());
-                saveAttachment(level, team);
-            }
-            case HOSTILE, PEACEFUL ->
-            {
-                if (stance.equals(Stance.NEUTRAL))
-                {
-                    team = team.withStance(stance).withStanceCooldown(Instant.now());
-                    saveAttachment(level, team);
-                }
-            }
+            saveAttachment(level, team.withStance(stance).withStanceCooldown(Instant.now()));
+            return StanceChange.SUCCESS;
         }
+
+        if (stance.equals(Stance.NEUTRAL) && (team.stance().equals(Stance.HOSTILE) || team.stance().equals(Stance.PEACEFUL)))
+        {
+            saveAttachment(level, team.withStance(stance).withStanceCooldown(Instant.now()));
+            return StanceChange.SUCCESS;
+        }
+
+        return StanceChange.NOT_ALLOWED;
     }
 
-    public static void changeTeamRelations(Level level, Team sourceTeam, Team targetTeam, Stance stance)
-    {
-        if (targetTeam.stance().equals(Stance.PEACEFUL) || sourceTeam.stance().equals(Stance.PEACEFUL)) return;
-        if (targetTeam.stance().equals(Stance.HOSTILE)) return;
-
-        Map<UUID, Stance> sourceRelations = new HashMap<>(sourceTeam.relations());
-        Map<UUID, Stance> targetRelations = new HashMap<>(targetTeam.relations());
-
-        float stanceCooldown = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
-        Instant cooldownEnd = sourceTeam.stanceCooldown().plusSeconds(Math.round(stanceCooldown * 60 * 60));
-        if (Instant.now().isBefore(cooldownEnd)) return;
-
-        Stance stanceToTarget = sourceRelations.getOrDefault(targetTeam.id(), Stance.NEUTRAL);
-        switch (stanceToTarget)
-        {
-            case NEUTRAL ->
-            {
-                sourceRelations.put(targetTeam.id(), stance);
-                sourceTeam = sourceTeam.withRelations(sourceRelations).withStanceCooldown(Instant.now());
-                saveAttachment(level, sourceTeam);
-
-                if (stance.equals(Stance.HOSTILE))
-                {
-                    targetRelations.put(sourceTeam.id(), stance);
-                    targetTeam = targetTeam.withRelations(targetRelations).withStanceCooldown(Instant.now());
-                    saveAttachment(level, targetTeam);
-                }
-            }
-            case HOSTILE, PEACEFUL ->
-            {
-                if (stance.equals(Stance.NEUTRAL))
-                {
-                    sourceRelations.put(targetTeam.id(), stance);
-                    sourceTeam = sourceTeam.withRelations(sourceRelations).withStanceCooldown(Instant.now());
-                    saveAttachment(level, sourceTeam);
-                }
-            }
-        }
-    }
+//    public static void changeTeamStance(Level level, Team team, Stance stance)
+//    {
+//        float stanceCooldown = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
+//        Instant cooldownEnd = team.stanceCooldown().plusSeconds(Math.round(stanceCooldown * 60 * 60));
+//
+//        if (Instant.now().isBefore(cooldownEnd)) return;
+//
+//        switch (team.stance())
+//        {
+//            case NEUTRAL ->
+//            {
+//                team = team.withStance(stance).withStanceCooldown(Instant.now());
+//                saveAttachment(level, team);
+//            }
+//            case HOSTILE, PEACEFUL ->
+//            {
+//                if (stance.equals(Stance.NEUTRAL))
+//                {
+//                    team = team.withStance(stance).withStanceCooldown(Instant.now());
+//                    saveAttachment(level, team);
+//                }
+//            }
+//        }
+//    }
 }

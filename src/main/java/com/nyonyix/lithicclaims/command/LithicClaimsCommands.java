@@ -4,7 +4,13 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import com.mojang.brigadier.exceptions.DynamicCommandExceptionType;
+import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
+import com.nyonyix.lithicclaims.command.arguments.LithicClaimsStanceArgument;
+import com.nyonyix.lithicclaims.command.arguments.LithicClaimsTeamArgument;
 import com.nyonyix.lithicclaims.data.Stance;
 import com.nyonyix.lithicclaims.data.manager.ClaimManager;
 import com.nyonyix.lithicclaims.data.manager.TeamManager;
@@ -18,10 +24,12 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.commands.arguments.coordinates.BlockPosArgument;
+import net.minecraft.commands.arguments.coordinates.Coordinates;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
@@ -32,32 +40,277 @@ import net.neoforged.neoforge.common.UsernameCache;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.function.Supplier;
 
 public class LithicClaimsCommands
 {
-    private static Team getTeamByNameOrUUID(CommandContext<CommandSourceStack> context, String argString)
+    @FunctionalInterface
+    private interface ClaimRun {int run(CommandContext<CommandSourceStack> context, Claim claim) throws CommandSyntaxException;}
+    @FunctionalInterface
+    private interface TeamRun {int run(CommandContext<CommandSourceStack> context, Team team) throws CommandSyntaxException;}
+
+    // value == null takes no value arg
+    // bare == null must have args
+    private record ClaimCommand(Supplier<RequiredArgumentBuilder<CommandSourceStack, ?>> value, ClaimRun bare, ClaimRun action){}
+
+    // value == null takes no value arg
+    // bare == null must have args
+    // explicitOp has trailing team argument and requires op or P2
+    private record TeamCommand(Supplier<RequiredArgumentBuilder<CommandSourceStack, ?>> value, TeamRun bare, TeamRun action, boolean explicitOp) {}
+
+    private static final Map<String, ClaimCommand> CLAIM_COMMANDS = new HashMap<>();
+    private static final Map<String, TeamCommand> TEAM_COMMANDS = new HashMap<>();
+
+    private static final DynamicCommandExceptionType ERROR_CLAIM_NOT_FOUND = new DynamicCommandExceptionType(name -> Component.translatableEscape("lithicclaims.argument.claim.notFound", name));
+    private static final DynamicCommandExceptionType ERROR_PLAYER_NOT_IN_TEAM = new DynamicCommandExceptionType(player -> Component.translatable("lithicclaims.command.team.playerNotInTeam", player));
+    private static final SimpleCommandExceptionType ERROR_NOT_IN_CLAIM = new SimpleCommandExceptionType(Component.translatableEscape("lithicclaims.argument.claim.notInClaim"));
+    private static final SimpleCommandExceptionType ERROR_NOT_LEADER = new SimpleCommandExceptionType(Component.translatableEscape("lithicclaims.command.team.notLeader"));
+
+    static
+    {
+        CLAIM_COMMANDS.put("owner", new ClaimCommand(() -> LithicClaimsTeamArgument.teamArgument("team"), LithicClaimsCommands::getOwner, LithicClaimsCommands::setOwner));
+        CLAIM_COMMANDS.put("area", new ClaimCommand(() -> Commands.argument("radius", IntegerArgumentType.integer(5, 64)), LithicClaimsCommands::getArea, LithicClaimsCommands::setArea));
+        CLAIM_COMMANDS.put("remove", new ClaimCommand(null, LithicClaimsCommands::remove, LithicClaimsCommands::remove));
+        CLAIM_COMMANDS.put("info", new ClaimCommand(null, LithicClaimsCommands::info, LithicClaimsCommands::info));
+    }
+
+    static
+    {
+        TEAM_COMMANDS.put("leader", new TeamCommand(() -> Commands.argument("player", EntityArgument.player()), LithicClaimsCommands::getLeader, LithicClaimsCommands::setLeader, true));
+        TEAM_COMMANDS.put("name", new TeamCommand(() -> Commands.argument("name", StringArgumentType.string()), LithicClaimsCommands::getName, LithicClaimsCommands::setName, true));
+        TEAM_COMMANDS.put("stance", new TeamCommand(() -> Commands.argument("stance", LithicClaimsStanceArgument.stance()), LithicClaimsCommands::getStance, LithicClaimsCommands::setStance, true));
+        TEAM_COMMANDS.put("colour", new TeamCommand(() -> Commands.argument("colour", IntegerArgumentType.integer(0, 16777215)), LithicClaimsCommands::getColour, LithicClaimsCommands::setColour, true));
+        TEAM_COMMANDS.put("kick", new TeamCommand(() -> Commands.argument("player", EntityArgument.player()), null, LithicClaimsCommands::kick, true));
+        TEAM_COMMANDS.put("disband", new TeamCommand(null, LithicClaimsCommands::disband, LithicClaimsCommands::disband, true));
+        TEAM_COMMANDS.put("info", new TeamCommand(null, LithicClaimsCommands::info, LithicClaimsCommands::info, false));
+    }
+
+    //
+    // CLAIM STUFFS
+    //
+
+    private static Claim implicitClaim(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
+    {
+        Claim claim = ClaimManager.getClaimContains(context.getSource().getLevel(), context.getSource().getPlayerOrException().blockPosition());
+
+        if (claim.owner().equals(Team.ZERO_UUID)) throw ERROR_NOT_IN_CLAIM.create();
+        return claim;
+    }
+
+    private static Claim claimAt(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
+    {
+        BlockPos location = BlockPosArgument.getBlockPos(context, "location");
+        Claim claim = ClaimManager.getClaimContains(context.getSource().getLevel(), location);
+
+        if (claim.owner().equals(Team.ZERO_UUID)) throw ERROR_CLAIM_NOT_FOUND.create(location.toShortString());
+        return claim;
+    }
+
+    private static void attachClaim(LiteralArgumentBuilder<CommandSourceStack> parent, String name, ClaimCommand def)
+    {
+        RequiredArgumentBuilder<CommandSourceStack, Coordinates> location = Commands.argument("location", BlockPosArgument.blockPos()).executes(context -> def.action().run(context, claimAt(context)));
+        LiteralArgumentBuilder<CommandSourceStack> literal = Commands.literal(name);
+
+        if (def.bare() != null) literal.executes(context -> def.bare().run(context, implicitClaim(context)));
+
+        if (def.value() == null)
+        {
+            literal.then(location);
+        }
+        else
+        {
+            RequiredArgumentBuilder<CommandSourceStack, ?> value = def.value().get();
+            value.executes(context -> def.action().run(context, implicitClaim(context)));
+            value.then(location);
+            literal.then(value);
+        }
+
+        parent.then(literal);
+    }
+
+    private static Component claimInfo(Level level, Claim claim)
+    {
+        Team team = TeamManager.getTeam(level, claim.owner());
+
+        Component calendarDate = Component.literal("");
+        if (ModList.get().isLoaded("tfc"))
+        {
+            calendarDate = ICalendar.getTimeAndDate(claim.creationTick(), Calendars.SERVER.getCalendarDaysInMonth());
+        }
+
+        Component posComponent = Component.literal(String.format("[%d, %d, %d], \n", claim.location().getX(), claim.location().getY(), claim.location().getZ()))
+                .withStyle(style -> style
+                        .withColor(ChatFormatting.GREEN)
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, String.format("/tp @s %d %d %d", claim.location().getX(), claim.location().getY(), claim.location().getZ())))
+                        .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.translatable("lithicclaims.command.claim.Teleport"))));
+
+        return Component.literal("Claim: \n").withStyle(ChatFormatting.AQUA)
+                .append(Component.literal("Location: ").withStyle(ChatFormatting.AQUA)
+                .append(posComponent)
+                .append(Component.literal("Claim Area: ").withStyle(ChatFormatting.AQUA)
+                .append(Component.literal(String.format("%s\n", claim.claimArea().toString())).withStyle(ChatFormatting.GREEN)
+                .append(Component.literal("Owner UUID: ").withStyle(ChatFormatting.AQUA)
+                .append(Component.literal(String.format("%s\n", claim.owner().toString())).withStyle(ChatFormatting.GREEN)
+                .append(Component.literal("Owner Team Name: ").withStyle(ChatFormatting.AQUA)
+                .append(Component.literal(String.format("%s\n", team.name())).withStyle(ChatFormatting.GREEN)
+                .append(Component.literal("Creation Tick: ").withStyle(ChatFormatting.AQUA)
+                .append(Component.literal(String.format("Raw: %d, Date: ", claim.creationTick())).withStyle(ChatFormatting.GREEN)
+                .append(calendarDate).withStyle(ChatFormatting.GREEN))))))))));
+    }
+
+    // Getters
+
+    private static int getOwner(CommandContext<CommandSourceStack> context, Claim claim)
+    {
+        Team owner = TeamManager.getTeam(context.getSource().getLevel(), claim.owner());
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.claim.getOwner", owner.name()), false);
+        return 1;
+    }
+
+    private static int getArea(CommandContext<CommandSourceStack> context, Claim claim)
+    {
+        int radius = (int) (claim.claimArea().getXsize() / 2.0);
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.claim.getArea", radius), false);
+        return 1;
+    }
+
+    // Setters
+
+    private static int setOwner(CommandContext<CommandSourceStack> context, Claim claim) throws CommandSyntaxException
     {
         Level level = context.getSource().getLevel();
-        String nameOrUUID = StringArgumentType.getString(context, argString);
-        String name = null;
-        UUID teamUUID = null;
+        Team newOwner = LithicClaimsTeamArgument.getTeam(context, "team");
+        Team oldOwner = TeamManager.getTeam(level, claim.owner());
 
-        try
+        if (claim.owner().equals(newOwner.id()))
         {
-            teamUUID = UUID.fromString(nameOrUUID);
-            return TeamManager.getTeam(level, teamUUID);
+            context.getSource().sendFailure(Component.translatable("lithicclaims.command.claim.setOwnerFail", newOwner.name()));
+            return 0;
         }
-        catch (IllegalArgumentException e)
+
+        List<BlockPos> newOwned = new ArrayList<>(newOwner.ownedClaims());
+        List<BlockPos> oldOwned = new ArrayList<>(oldOwner.ownedClaims());
+        newOwned.add(claim.location());
+        oldOwned.remove(claim.location());
+
+        ClaimManager.saveAttachment(level, claim.withOwner(newOwner.id()));
+        TeamManager.saveAttachment(level, newOwner.withOwnedClaims(newOwned));
+        TeamManager.saveAttachment(level, oldOwner.withOwnedClaims(oldOwned));
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.claim.setOwner", newOwner.name()), false);
+        return 1;
+    }
+
+    private static int setArea(CommandContext<CommandSourceStack> context, Claim claim)
+    {
+        int radius = IntegerArgumentType.getInteger(context, "radius") * 2;
+        BlockPos pos = claim.location();
+
+        AABB newArea = AABB.ofSize(Vec3.atCenterOf(pos), radius, radius, radius);
+        ClaimManager.saveAttachment(context.getSource().getLevel(), claim.withClaimArea(newArea));
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.claim.setArea", radius), false);
+        return 1;
+    }
+
+    // Non-Get/Set
+
+    private static int remove(CommandContext<CommandSourceStack> context, Claim claim)
+    {
+        ClaimManager.claimCleanUp(context.getSource().getLevel(), claim);
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.claim.remove", claim.location().toShortString()), false);
+        return 1;
+    }
+
+    private static int info(CommandContext<CommandSourceStack> context, Claim claim)
+    {
+        context.getSource().sendSuccess(() -> claimInfo(context.getSource().getLevel(), claim), false);
+        return 1;
+    }
+
+    private static int list(CommandContext<CommandSourceStack> context)
+    {
+        Level level = context.getSource().getLevel();
+        Map<BlockPos, Claim> activeClaims = ClaimManager.getActiveClaims(level);
+
+        if (activeClaims.isEmpty())
         {
-            name = nameOrUUID;
-            return TeamManager.getTeamByName(level, name);
+            context.getSource().sendFailure(Component.translatable("lithicclaims.command.claim.listFail"));
+            return 0;
         }
+
+        for (Claim claim : activeClaims.values())
+        {
+            context.getSource().sendSuccess(() -> claimInfo(level, claim), false);
+        }
+
+        return 1;
+    }
+
+    //
+    // Team Stuffs
+    //
+
+    private static void requireLeader(CommandContext<CommandSourceStack> context, Team team) throws CommandSyntaxException
+    {
+        if (context.getSource().hasPermission(Commands.LEVEL_GAMEMASTERS)) return;
+
+        if (context.getSource().isPlayer())
+        {
+            Player player = context.getSource().getPlayerOrException();
+            Level level = context.getSource().getLevel();
+
+            if (TeamManager.isInTeam(level, player.getUUID(), team.id()) && TeamManager.getLeaderUUID(level, team.id()).equals(player.getUUID())) return;
+        }
+
+        throw ERROR_NOT_LEADER.create();
+    }
+
+    private static void attachTeam(LiteralArgumentBuilder<CommandSourceStack> parent, String name, TeamCommand def)
+    {
+        RequiredArgumentBuilder<CommandSourceStack, String> target = LithicClaimsTeamArgument.teamArgument("team").executes(context -> def.action().run(context, LithicClaimsTeamArgument.getTeam(context, "team")));
+
+        if (def.explicitOp()) target.requires(s -> s.hasPermission(Commands.LEVEL_GAMEMASTERS));
+
+        LiteralArgumentBuilder<CommandSourceStack> literal = Commands.literal(name);
+
+        if (def.bare() != null)
+        {
+            literal.executes(context -> def.bare().run(context, LithicClaimsTeamArgument.getPlayerTeam(context)));
+        }
+
+        if (def.value() == null)
+        {
+            literal.then(target);
+        }
+        else
+        {
+            RequiredArgumentBuilder<CommandSourceStack, ?> value = def.value().get();
+            value.executes(context -> def.action().run(context, LithicClaimsTeamArgument.getPlayerTeam(context)));
+            value.then(target);
+            literal.then(value);
+        }
+
+        parent.then(literal);
+    }
+
+    private static String displayName(UUID player)
+    {
+        return UsernameCache.containsUUID(player) ? UsernameCache.getLastKnownUsername(player) : "Unknown";
+    }
+
+    private static String titleCase(Stance stance)
+    {
+        String name = stance.name().toUpperCase(Locale.ROOT);
+        return Character.toUpperCase(name.charAt(0)) + name.substring(1).toLowerCase(Locale.ROOT);
     }
 
     private static String parseInstant(Instant cooldown)
     {
         float stanceCooldownConfig = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
-        Instant cooldownEnd = cooldown.plusSeconds(Math.round(stanceCooldownConfig * 60 * 60));
 
         Duration cooldownDiff = Duration.between(Instant.now(), cooldown.plusSeconds(Math.round(stanceCooldownConfig * 60 * 60)));
         boolean ago = cooldownDiff.isNegative();
@@ -69,919 +322,244 @@ public class LithicClaimsCommands
         return ago ? time + " ago" : "until: " + time;
     }
 
-    private static int executeListClaims(CommandContext<CommandSourceStack> context)
+    private static Component teamInfo(Team team)
     {
-        try
-        {
-            Level level = context.getSource().getLevel();
-            Map<BlockPos, Claim> activeClaims = ClaimManager.getActiveClaims(level);
-
-            if (activeClaims.isEmpty())
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.claim.listFailure"));
-                return 0;
-            }
-
-            for (Claim claim : activeClaims.values())
-            {
-                Team team = TeamManager.getTeam(level, claim.owner());
-                Component calendarDate = Component.literal("");
-                if (ModList.get().isLoaded("tfc"))
-                {
-                    calendarDate = ICalendar.getTimeAndDate(claim.creationTick(), Calendars.SERVER.getCalendarDaysInMonth());
-                }
-
-                Component posComponent = Component.literal(String.format("[%d, %d, %d], \n", claim.location().getX(), claim.location().getY(), claim.location().getZ()))
-                        .withStyle(style -> style
-                                .withColor(ChatFormatting.GREEN)
-                                .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, String.format("/tp @s %d %d %d", claim.location().getX(), claim.location().getY(), claim.location().getZ())))
-                                .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.translatable("lithicclaims.command.claim.Teleport"))));
-
-                Component claimComponent = Component.literal("Claim: \n").withStyle(ChatFormatting.AQUA)
-                        .append(Component.literal("Location: ").withStyle(ChatFormatting.AQUA)
-                        .append(posComponent)
-                        .append(Component.literal("Claim Area: ").withStyle(ChatFormatting.AQUA)
-                        .append(Component.literal(String.format("%s\n", claim.claimArea().toString())).withStyle(ChatFormatting.GREEN)
-                        .append(Component.literal("Owner UUID: ").withStyle(ChatFormatting.AQUA)
-                        .append(Component.literal(String.format("%s\n", claim.owner().toString())).withStyle(ChatFormatting.GREEN)
-                        .append(Component.literal("Owner Team Name: ").withStyle(ChatFormatting.AQUA)
-                        .append(Component.literal(String.format("%s\n", team.name())).withStyle(ChatFormatting.GREEN)
-                        .append(Component.literal("Creation Tick: ").withStyle(ChatFormatting.AQUA)
-                        .append(Component.literal(String.format("Raw: %d, Date: ", claim.creationTick())).withStyle(ChatFormatting.GREEN)
-                        .append(calendarDate).withStyle(ChatFormatting.GREEN))))))))));
-
-                context.getSource().sendSuccess(() -> claimComponent, true);
-            }
-
-            return 1;
-        }
-        catch (Exception e)
-        {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
-        }
-    }
-
-    private static int executeClaimRemove(CommandContext<CommandSourceStack> context)
-    {
-        try
-        {
-            BlockPos pos = BlockPosArgument.getBlockPos(context, "location");
-            Level level = context.getSource().getLevel();
-            Claim claim = ClaimManager.getClaim(level, pos);
-
-            if (claim.owner().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.claim.noClaimFound", pos.toShortString()));
-                return 0;
-            }
-
-            ClaimManager.claimCleanUp(level, pos);
-
-            context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.claim.removeSuccess", pos.toShortString()), true);
-            return 1;
-        }
-        catch (Exception e)
-        {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
-        }
-    }
-
-    private  static int executeClaimInfo(CommandContext<CommandSourceStack> context)
-    {
-        try
-        {
-            Level level = context.getSource().getLevel();
-            BlockPos pos = BlockPosArgument.getBlockPos(context, "location");
-
-            Claim claim = ClaimManager.getClaimContains(level, pos);
-            if (claim.owner().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.claim.noClaimFound", pos.toShortString()));
-                return 0;
-            }
-
-            Component calendarDate = Component.literal("");
-            if (ModList.get().isLoaded("tfc"))
-            {
-                calendarDate = ICalendar.getTimeAndDate(claim.creationTick(), Calendars.SERVER.getCalendarDaysInMonth());
-            }
-
-            Team team = TeamManager.getTeam(level, claim.owner());
-            Component posComponent = Component.literal(String.format("[%d, %d, %d], \n", claim.location().getX(), claim.location().getY(), claim.location().getZ()))
-                    .withStyle(style -> style
-                            .withColor(ChatFormatting.GREEN)
-                            .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, String.format("/tp @s %d %d %d", claim.location().getX(), claim.location().getY(), claim.location().getZ())))
-                            .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.translatable("lithicclaims.command.claim.Teleport"))));
-
-            Component claimComponent = Component.literal("Claim: \n").withStyle(ChatFormatting.AQUA)
-                    .append(Component.literal("Location: ").withStyle(ChatFormatting.AQUA)
-                    .append(posComponent)
-                    .append(Component.literal("Claim Area: ").withStyle(ChatFormatting.AQUA)
-                    .append(Component.literal(String.format("%s\n", claim.claimArea().toString())).withStyle(ChatFormatting.GREEN)
-                    .append(Component.literal("Owner UUID: ").withStyle(ChatFormatting.AQUA)
-                    .append(Component.literal(String.format("%s\n", claim.owner().toString())).withStyle(ChatFormatting.GREEN)
-                    .append(Component.literal("Owner Team Name: ").withStyle(ChatFormatting.AQUA)
-                    .append(Component.literal(String.format("%s\n", team.name())).withStyle(ChatFormatting.GREEN)
-                    .append(Component.literal("Creation Tick: ").withStyle(ChatFormatting.AQUA)
-                    .append(Component.literal(String.format("Raw: %d, Date: ", claim.creationTick())).withStyle(ChatFormatting.GREEN)
-                    .append(calendarDate).withStyle(ChatFormatting.GREEN))))))))));
-
-            context.getSource().sendSuccess(() -> claimComponent, true);
-            return 1;
-        }
-        catch (Exception e)
-        {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
-        }
-    }
-
-    private static int executeClaimModifyOwner(CommandContext<CommandSourceStack> context)
-    {
-        try
-        {
-            BlockPos pos = BlockPosArgument.getBlockPos(context, "location");
-            Team team = getTeamByNameOrUUID(context, "name | uuid");
-            Level level = context.getSource().getLevel();
-            Claim claim = ClaimManager.getClaimContains(level, pos);
-            Team oldTeam = TeamManager.getTeam(level, claim.owner());
-
-            if (claim.owner().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.claim.noClaimFound", pos.toShortString()));
-                return 0;
-            }
-            else if (team.id().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.noTeamFound", StringArgumentType.getString(context, "name | uuid")));
-                return 0;
-            }
-            else if (claim.owner().equals(team.id()))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.claim.modifyOwnerFailure", StringArgumentType.getString(context, "name | uuid")));
-                return 0;
-            }
-
-            List<BlockPos> newOwnedClaims = new ArrayList<>(team.ownedClaims());
-            List<BlockPos> oldOwnedClaims = new ArrayList<>(oldTeam.ownedClaims());
-            newOwnedClaims.add(claim.location());
-            oldOwnedClaims.remove(claim.location());
-
-            claim = claim.withOwner(team.id());
-            Team newTeam = team.withOwnedClaims(newOwnedClaims);
-            Team newOldTeam = oldTeam.withOwnedClaims(oldOwnedClaims);
-            ClaimManager.saveAttachment(level, claim);
-            TeamManager.saveAttachment(level, newTeam);
-            TeamManager.saveAttachment(level, newOldTeam);
-
-            context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.claim.modifyOwnerSuccess", team.name(), pos.toShortString()), true);
-            return 1;
-        }
-        catch (Exception e)
-        {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
-        }
-    }
-
-    private static int executeClaimModifyArea(CommandContext<CommandSourceStack> context)
-    {
-        try
-        {
-            BlockPos pos = BlockPosArgument.getBlockPos(context, "location");
-            int radius = IntegerArgumentType.getInteger(context, "radius");
-            Level level = context.getSource().getLevel();
-
-
-            final Claim oldClaim = ClaimManager.getClaimContains(level, pos);
-            if (oldClaim.owner().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.claim.noClaimFound", pos.toShortString()));
-                return 0;
-            }
-
-            pos = oldClaim.location();
-            Vec3 min = new Vec3(pos.getX() - radius, pos.getY() - radius, pos.getZ() - radius);
-            Vec3 max = new Vec3(pos.getX() + radius, pos.getY() + radius, pos.getZ() + radius);
-            AABB claimArea = new AABB(min, max);
-
-            Claim newClaim = oldClaim.withClaimArea(claimArea);
-            ClaimManager.saveAttachment(level, newClaim);
-
-            context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.claim.modifyAreaSuccess", oldClaim.location().toShortString(), radius), true);
-            return 1;
-        }
-        catch (Exception e)
-        {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
-        }
-    }
-
-    private static int executeTeamCreate(CommandContext<CommandSourceStack> context)
-    {
-        try
-        {
-            String name = StringArgumentType.getString(context, "name");
-            Player player = context.getSource().getPlayer();
-            Stance stance = Stance.valueOf(StringArgumentType.getString(context, "stance").toUpperCase(Locale.ROOT));
-            int colour = IntegerArgumentType.getInteger(context, "colour");
-
-            Level level = context.getSource().getLevel();
-
-            Team playerTeam = TeamManager.getTeamByPlayer(level, player.getUUID());
-            if (!playerTeam.id().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.createFailure", player.getDisplayName().getString()));
-                return 0;
-            }
-
-            Team team = TeamManager.createTeam(level, name, player, stance, colour);
-            TeamManager.saveAttachment(context.getSource().getLevel(), team);
-
-            context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.team.createTeam", team.name()), true);
-            return 1;
-        }
-        catch (Exception e)
-        {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
-        }
-    }
-
-    private static int executeTeamLeave(CommandContext<CommandSourceStack> context)
-    {
-        try
-        {
-            Level level = context.getSource().getLevel();
-            Player player = context.getSource().getPlayerOrException();
-            Team team = TeamManager.getTeamByPlayer(level, player.getUUID());
-
-            if (team.id().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.playerNotInTeam", UsernameCache.containsUUID(player.getUUID()) ? UsernameCache.getLastKnownUsername(player.getUUID()) : "Unknown"));
-                return 0;
-            }
-
-            TeamManager.removeMember(level, player.getUUID());
-            context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.LeaveSuccess", team.name()), true);
-            return 1;
-        }
-        catch (Exception e)
-        {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
-        }
-    }
-
-    private static int executeTeamModifyLeader(CommandContext<CommandSourceStack> context)
-    {
-        try
-        {
-            final Team oldTeam = getTeamByNameOrUUID(context, "name | uuid");
-            if (oldTeam.id().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.noTeamFound", StringArgumentType.getString(context, "name | uuid")));
-                return 0;
-            }
-
-            Player player = EntityArgument.getPlayer(context, "player");
-            Level level = context.getSource().getLevel();
-
-            if (!TeamManager.isInTeam(level, player.getUUID(), oldTeam.id()))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.playerNotInTeam", UsernameCache.containsUUID(player.getUUID()) ? UsernameCache.getLastKnownUsername(player.getUUID()) : "Unknown"));
-                return 0;
-            }
-
-            if (TeamManager.isInTeam(level, player.getUUID(), oldTeam.id()) && context.getSource().isPlayer())
-            {
-                Player sourcePlayer = context.getSource().getPlayerOrException();
-                if (TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) && TeamManager.getLeaderUUID(level, oldTeam.id()).equals(sourcePlayer.getUUID()))
-                {
-                    Team newTeam = oldTeam.withLeader(player.getUUID());
-                    TeamManager.saveAttachment(level, newTeam);
-
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.modifyLeaderSuccess", player.getDisplayName(), oldTeam.name()), true);
-                    return 1;
-                }
-                else if (TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) && !TeamManager.getLeaderUUID(level, oldTeam.id()).equals(sourcePlayer.getUUID()))
-                {
-                    context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyPermission"));
-                    return 0;
-                }
-                else if ((!TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) || !oldTeam.leader().equals(sourcePlayer.getUUID())) && context.getSource().hasPermission(Commands.LEVEL_GAMEMASTERS))
-                {
-                    Team newTeam = oldTeam.withLeader(player.getUUID());
-                    TeamManager.saveAttachment(level, newTeam);
-
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.modifyLeaderSuccess", player.getDisplayName(), oldTeam.name()), true);
-                    return 1;
-                }
-                else
-                {
-                    context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyPermission"));
-                    return 0;
-                }
-            }
-
-            return 0;
-        }
-        catch (Exception e)
-        {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
-        }
-    }
-
-    private static int executeTeamModifyName(CommandContext<CommandSourceStack> context)
-    {
-        try
-        {
-            final Team oldTeam = getTeamByNameOrUUID(context, "name | uuid");
-            if (oldTeam.id().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.noTeamFound", StringArgumentType.getString(context, "name | uuid")));
-                return 0;
-            }
-
-            Level level = context.getSource().getLevel();
-
-            if (context.getSource().isPlayer())
-            {
-                Player sourcePlayer = context.getSource().getPlayerOrException();
-                if (TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) && TeamManager.getLeaderUUID(level, oldTeam.id()).equals(sourcePlayer.getUUID()))
-                {
-                    Team newTeam = oldTeam.withName(StringArgumentType.getString(context, "name"));
-                    TeamManager.saveAttachment(context.getSource().getLevel(), newTeam);
-
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.modifyNameSuccess", newTeam.name(), oldTeam.name()), true);
-                    return 1;
-                }
-                else if (TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) && !TeamManager.getLeaderUUID(level, oldTeam.id()).equals(sourcePlayer.getUUID()))
-                {
-                    context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyPermission"));
-                    return 0;
-                }
-                else if ((!TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) || !oldTeam.leader().equals(sourcePlayer.getUUID())) && context.getSource().hasPermission(Commands.LEVEL_GAMEMASTERS))
-                {
-                    Team newTeam = oldTeam.withName(StringArgumentType.getString(context, "name"));
-                    TeamManager.saveAttachment(context.getSource().getLevel(), newTeam);
-
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.modifyNameSuccess", newTeam.name(), oldTeam.name()), true);
-                    return 1;
-                }
-                else
-                {
-                    context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyPermission"));
-                    return 0;
-                }
-            }
-
-            return 0;
-        }
-        catch (Exception e)
-        {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
-        }
-    }
-
-    private static int executeTeamModifyStance(CommandContext<CommandSourceStack> context)
-    {
-        try
-        {
-            final Team oldTeam = getTeamByNameOrUUID(context, "name | uuid");
-            if (oldTeam.id().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.noTeamFound", StringArgumentType.getString(context, "name | uuid")));
-                return 0;
-            }
-
-            Stance stance = Stance.valueOf(StringArgumentType.getString(context, "stance").toUpperCase(Locale.ROOT));
-            Level level = context.getSource().getLevel();
-
-            float stanceCooldownConfig = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
-            Instant cooldownEnd = oldTeam.stanceCooldown().plusSeconds(Math.round(stanceCooldownConfig * 60 * 60));
-
-            String result = parseInstant(oldTeam.stanceCooldown());
-
-            if (Instant.now().isBefore(cooldownEnd))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyStanceCooldown", result));
-                return 0;
-            }
-
-            if (context.getSource().isPlayer())
-            {
-                Player sourcePlayer = context.getSource().getPlayerOrException();
-                if (TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) && TeamManager.getLeaderUUID(level, oldTeam.id()).equals(sourcePlayer.getUUID()))
-                {
-                    TeamManager.changeTeamStance(level, oldTeam, stance);
-
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.modifyStanceSuccess", stance.toString(), oldTeam.name()), true);
-                    return 1;
-                }
-                else if (TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) && !TeamManager.getLeaderUUID(level, oldTeam.id()).equals(sourcePlayer.getUUID()))
-                {
-                    context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyPermission"));
-                    return 0;
-                }
-                else if ((!TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) || !oldTeam.leader().equals(sourcePlayer.getUUID())) && context.getSource().hasPermission(Commands.LEVEL_GAMEMASTERS))
-                {
-                    TeamManager.changeTeamStance(level, oldTeam, stance);
-
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.modifyStanceSuccess", stance.toString(), oldTeam.name()), true);
-                    return 1;
-                }
-                else
-                {
-                    context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyPermission"));
-                    return 0;
-                }
-            }
-
-            return 0;
-        }
-        catch (Exception e)
-        {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
-        }
-    }
-
-    private static int executeTeamModifyColour(CommandContext<CommandSourceStack> context)
-    {
-        try
-        {
-            final Team oldTeam = getTeamByNameOrUUID(context, "name | uuid");
-            if (oldTeam.id().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.noTeamFound", StringArgumentType.getString(context, "name | uuid")));
-                return 0;
-            }
-
-            int colour = IntegerArgumentType.getInteger(context, "colour");
-            Level level = context.getSource().getLevel();
-
-            if (context.getSource().isPlayer())
-            {
-                Player sourcePlayer = context.getSource().getPlayerOrException();
-                if (TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) && TeamManager.getLeaderUUID(level, oldTeam.id()).equals(sourcePlayer.getUUID()))
-                {
-                    Team newTeam = oldTeam.withColour(colour);
-                    TeamManager.saveAttachment(level, newTeam);
-
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.modifyColourSuccess", Component.translatable("lithicclaims.command.team.colour").withColor(newTeam.colour()), oldTeam.name()), true);
-                    return 1;
-                }
-                else if (TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) && !TeamManager.getLeaderUUID(level, oldTeam.id()).equals(sourcePlayer.getUUID()))
-                {
-                    context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyPermission"));
-                    return 0;
-                }
-                else if ((!TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) || !oldTeam.leader().equals(sourcePlayer.getUUID())) && context.getSource().hasPermission(Commands.LEVEL_GAMEMASTERS))
-                {
-                    Team newTeam = oldTeam.withColour(colour);
-                    TeamManager.saveAttachment(level, newTeam);
-
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.modifyColourSuccess", Component.translatable("lithicclaims.command.team.colour").withColor(newTeam.colour()), oldTeam.name()), true);                    return 1;
-                }
-                else
-                {
-                    context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyPermission"));
-                    return 0;
-                }
-            }
-
-            return 0;
-        }
-        catch (Exception e)
-        {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
-        }
-    }
-
-    private static int executeListTeams(CommandContext<CommandSourceStack> context)
-    {
-        try
-        {
-            Level level = context.getSource().getLevel();
-            Map<UUID, Team> activeTeams = TeamManager.getActiveTeams(level);
-            float stanceCooldownConfig = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
-
-            if (activeTeams.isEmpty())
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.listFailure"));
-                return 0;
-            }
-
-            for (Team team : activeTeams.values())
-            {
-                String leaderName = UsernameCache.containsUUID(team.leader()) ? UsernameCache.getLastKnownUsername(team.leader()) : "Unknown";
-
-                String result = parseInstant(team.stanceCooldown());
-
-                Component teamComponent = Component.literal("Team: \n").withStyle(ChatFormatting.AQUA)
-                .append(Component.literal("ID: ").withStyle(ChatFormatting.AQUA)
-                .append(Component.literal(String.format("%s\n", team.id().toString())).withStyle(ChatFormatting.GREEN)
+        return Component.literal("Team: \n").withStyle(ChatFormatting.AQUA)
                 .append(Component.literal("Leader: ").withStyle(ChatFormatting.AQUA)
-                .append(Component.literal(String.format("%s\n", leaderName)).withStyle(ChatFormatting.GREEN)
+                .append(Component.literal(String.format("%s\n", displayName(team.leader()))).withStyle(ChatFormatting.GREEN)
                 .append(Component.literal("Name: ").withStyle(ChatFormatting.AQUA)
                 .append(Component.literal(String.format("%s\n", team.name())).withStyle(ChatFormatting.GREEN)
-                .append(Component.literal("Number Of claims: ").withStyle(ChatFormatting.AQUA)
-                .append(Component.literal(String.format("%d\n", team.ownedClaims().size())).withStyle(ChatFormatting.GREEN)
                 .append(Component.literal("Number Of Members: ").withStyle(ChatFormatting.AQUA)
                 .append(Component.literal(String.format("%d\n", team.members().size())).withStyle(ChatFormatting.GREEN)
                 .append(Component.literal("Stance: ").withStyle(ChatFormatting.AQUA)
-                .append(Component.literal(String.format("%s\n", Character.toUpperCase(team.stance().toString().charAt(0)) + team.stance().toString().substring(1))).withStyle(ChatFormatting.GREEN)
-                .append(Component.literal("Colour: ").withStyle(ChatFormatting.AQUA)
-                .append(Component.literal(String.format("0x%06X\n", team.colour())).withStyle(ChatFormatting.GREEN)
-                .append(Component.literal("Stance Cooldown: ").withStyle(ChatFormatting.AQUA)
-                .append(Component.literal(result).withStyle(ChatFormatting.GREEN)))))))))))))))));
+                .append(Component.literal(titleCase(team.stance())).withStyle(ChatFormatting.GREEN)))))))));
+    }
 
-                context.getSource().sendSuccess(() -> teamComponent, true);
-            }
+    // Getters
 
-            return 1;
-        }
-        catch (Exception e)
+    private static int getLeader(CommandContext<CommandSourceStack> context, Team team)
+    {
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.getLeader", displayName(team.leader())), false);
+        return 1;
+    }
+
+    private static int getName(CommandContext<CommandSourceStack> context, Team team)
+    {
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.getName", team.name()), false);
+        return 1;
+    }
+
+    private static int getStance(CommandContext<CommandSourceStack> context, Team team)
+    {
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.getStance", titleCase(team.stance())), false);
+        return 1;
+    }
+
+    private static int getColour(CommandContext<CommandSourceStack> context, Team team)
+    {
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.getColour", String.format("0x%06X", team.colour())).withColor(team.colour()), false);
+        return 1;
+    }
+
+    // Setters
+
+    private static int setLeader(CommandContext<CommandSourceStack> context, Team team) throws CommandSyntaxException
+    {
+        requireLeader(context, team);
+
+        ServerPlayer player = EntityArgument.getPlayer(context, "player");
+        Level level = context.getSource().getLevel();
+
+        if (!TeamManager.isInTeam(level, player.getUUID(), team.id())) throw ERROR_PLAYER_NOT_IN_TEAM.create(displayName(player.getUUID()));
+
+        TeamManager.saveAttachment(level, team.withLeader(player.getUUID()));
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.setLeader", displayName(player.getUUID()), team.name()), false);
+        return 1;
+    }
+
+    private static int setName(CommandContext<CommandSourceStack> context, Team team) throws CommandSyntaxException
+    {
+        requireLeader(context, team);
+
+        String name = StringArgumentType.getString(context, "name");
+        TeamManager.saveAttachment(context.getSource().getLevel(), team.withName(name));
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.setName", name, team.name()), false);
+        return 1;
+    }
+
+    private static int setStance(CommandContext<CommandSourceStack> context, Team team) throws CommandSyntaxException
+    {
+        requireLeader(context, team);
+
+        Stance stance = LithicClaimsStanceArgument.getStance(context, "stance");
+        Level level = context.getSource().getLevel();
+
+        switch (TeamManager.changeTeamStance(level, team, stance))
         {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
+            case ON_COOLDOWN ->
+            {
+                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.stanceCooldown", parseInstant(team.stanceCooldown())));
+                return 0;
+            }
+            case NOT_ALLOWED ->
+            {
+                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.stanceNotAllowed"));
+                return 0;
+            }
+            default ->
+            {
+                context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.setStance",titleCase(stance), team.name()), false);
+                return 1;
+            }
         }
     }
 
-//    private static int executeTeamRelations(CommandContext<CommandSourceStack> context)
-//    {
-//        try
-//        {
-//            Team targetTeam = getTeamByNameOrUUID(context, "name | uuid");
-//            Stance stance = Stance.valueOf(StringArgumentType.getString(context, "stance").toUpperCase(Locale.ROOT));
-//            Player sourcePlayer = context.getSource().getPlayerOrException();
-//            Level level = context.getSource().getLevel();
-//            Team sourceTeam = TeamManager.getTeamByPlayer(level, sourcePlayer.getUUID());
-//
-//            float stanceCooldownConfig = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
-//            Instant cooldownEnd = sourceTeam.stanceCooldown().plusSeconds(Math.round(stanceCooldownConfig * 60 * 60));
-//
-//            Duration cooldownDiff = Duration.between(Instant.now(), sourceTeam.stanceCooldown().plusSeconds(Math.round(stanceCooldownConfig * 60 * 60)));
-//            boolean ago = cooldownDiff.isNegative();
-//            long total = Math.abs(cooldownDiff.toSeconds());
-//            long h = total / 3600;
-//            long m = (total % 3600) / 60;
-//            long s = total % 60;
-//            String time = String.format("%dh, %dm, %ds", h, m, s);
-//            String result = ago ? time + " ago" : time + " until";
-//
-//            if (Instant.now().isBefore(cooldownEnd))
-//            {
-//                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyStanceCooldown", result));
-//                return 0;
-//            }
-//
-//            if (targetTeam.stance().equals(Stance.PEACEFUL) || sourceTeam.stance().equals(Stance.PEACEFUL))
-//            {
-//                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.relationsPeaceful"));
-//                return 0;
-//            }
-//
-//            if (targetTeam.stance().equals(Stance.HOSTILE))
-//            {
-//                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.relationsHostile"));
-//                return 0;
-//            }
-//
-//            if (targetTeam.id().equals(Team.ZERO_UUID))
-//            {
-//                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.noTeamFound", StringArgumentType.getString(context, "name | uuid")));
-//                return 0;
-//            }
-//
-//            if (sourceTeam.id().equals(Team.ZERO_UUID))
-//            {
-//                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.notInTeam"));
-//                return 0;
-//            }
-//
-//            TeamManager.changeTeamRelations(level, sourceTeam, targetTeam, stance);
-//
-//            context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.relationsSuccess",targetTeam.name(), stance.toString()), true);
-//            return 1;
-//        }
-//        catch (Exception e)
-//        {
-//            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-//            return 0;
-//        }
-//    }
-
-    private static int executeTeamRelations(CommandContext<CommandSourceStack> context)
+    private static int setColour(CommandContext<CommandSourceStack> context, Team team) throws CommandSyntaxException
     {
-        try
-        {
-            final Team targetTeam = getTeamByNameOrUUID(context, "name | uuid");
-            final Team sourceTeam = TeamManager.getTeamByPlayer(context.getSource().getLevel(), context.getSource().getPlayer().getUUID());
-            if (targetTeam.id().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.noTeamFound", StringArgumentType.getString(context, "name | uuid")));
-                return 0;
-            }
+        requireLeader(context, team);
 
-            Level level = context.getSource().getLevel();
-            Stance stance = Stance.valueOf(StringArgumentType.getString(context, "stance").toUpperCase(Locale.ROOT));
+        int colour = IntegerArgumentType.getInteger(context, "colour");
+        TeamManager.saveAttachment(context.getSource().getLevel(), team.withColour(colour));
 
-            float stanceCooldownConfig = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
-            Instant cooldownEnd = sourceTeam.stanceCooldown().plusSeconds(Math.round(stanceCooldownConfig * 60 * 60));
-            String result = parseInstant(sourceTeam.stanceCooldown());
-
-            if (Instant.now().isBefore(cooldownEnd))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyStanceCooldown", result));
-                return 0;
-            }
-
-            if (context.getSource().isPlayer())
-            {
-                Player sourcePlayer = context.getSource().getPlayerOrException();
-                if (TeamManager.isInTeam(level, sourcePlayer.getUUID(), targetTeam.id()) && TeamManager.getLeaderUUID(level, targetTeam.id()).equals(sourcePlayer.getUUID()))
-                {
-                    TeamManager.changeTeamRelations(level, sourceTeam, targetTeam, stance);
-
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.relationsSuccess",targetTeam.name(), stance.toString()), true);
-                    return 1;
-                }
-                else if (TeamManager.isInTeam(level, sourcePlayer.getUUID(), targetTeam.id()) && !TeamManager.getLeaderUUID(level, targetTeam.id()).equals(sourcePlayer.getUUID()))
-                {
-                    context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyPermission"));
-                    return 0;
-                }
-                else if (!TeamManager.isInTeam(level, sourcePlayer.getUUID(), targetTeam.id()) && context.getSource().hasPermission(Commands.LEVEL_GAMEMASTERS))
-                {
-                    TeamManager.changeTeamRelations(level, sourceTeam, targetTeam, stance);
-
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.relationsSuccess",targetTeam.name(), stance.toString()), true);
-                    return 1;
-                }
-                else
-                {
-                    context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyPermission"));
-                    return 0;
-                }
-            }
-
-            return 0;
-        }
-        catch (Exception e)
-        {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
-        }
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.setColour", String.format("0x%06X", colour)).withColor(colour), false);
+        return 1;
     }
 
-    private static int executeTeamResetCooldown(CommandContext<CommandSourceStack> context)
+    // Non-Get/Set
+
+    private static int kick(CommandContext<CommandSourceStack> context, Team team) throws CommandSyntaxException
     {
-        try
-        {
-            Team oldTeam = getTeamByNameOrUUID(context, "name | uuid");
-            float teamCooldownConfig = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
+        requireLeader(context, team);
 
-            if (oldTeam.id().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.noTeamFound", StringArgumentType.getString(context, "name | uuid")));
-                return 0;
-            }
+        ServerPlayer player = EntityArgument.getPlayer(context, "player");
+        Level level = context.getSource().getLevel();
 
-            Instant newInstant = Instant.now().minusSeconds(Math.round(teamCooldownConfig * 60 * 60));
+        if (!team.members().contains(player.getUUID())) throw ERROR_PLAYER_NOT_IN_TEAM.create(displayName(player.getUUID()));
 
-            Team newTeam = oldTeam.withStanceCooldown(newInstant);
-            TeamManager.saveAttachment(context.getSource().getLevel(), newTeam);
+        TeamManager.removeMember(level, player);
 
-            context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.ResetSuccess", newTeam.name()), true);
-            return 1;
-        }
-        catch (Exception e)
-        {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
-        }
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.kick", displayName(player.getUUID()), team.name()), false);
+        player.displayClientMessage(Component.translatable("lithicclaims.command.team.kicked", team.name()).withStyle(ChatFormatting.RED), false);
+        return 1;
     }
 
-    private static int executeTeamKick(CommandContext<CommandSourceStack> context)
+    private static int disband(CommandContext<CommandSourceStack> context, Team team) throws CommandSyntaxException
     {
-        try
-        {
-            final Team oldTeam = getTeamByNameOrUUID(context, "name | uuid");
-            if (oldTeam.id().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.noTeamFound", StringArgumentType.getString(context, "name | uuid")));
-                return 0;
-            }
+        requireLeader(context, team);
 
-            Player player = EntityArgument.getPlayer(context, "player");
-            Level level = context.getSource().getLevel();
+        TeamManager.teamCleanUp(context.getSource().getLevel(), team);
 
-            if (!oldTeam.members().contains(player.getUUID()))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.playerNotInTeam", StringArgumentType.getString(context, UsernameCache.containsUUID(player.getUUID()) ? UsernameCache.getLastKnownUsername(player.getUUID()) : "Unknown")));
-                return 0;
-            }
-
-            if (context.getSource().isPlayer())
-            {
-                Player sourcePlayer = context.getSource().getPlayerOrException();
-                if (TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) && TeamManager.getLeaderUUID(level, oldTeam.id()).equals(sourcePlayer.getUUID()))
-                {
-                    TeamManager.removeMember(level, player.getUUID());
-
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.modifyKickSuccess", oldTeam.name()), true);
-                    player.displayClientMessage(Component.translatable("lithicclaims.command.team.kicked", oldTeam.name()).withStyle(ChatFormatting.RED), true);
-                    return 1;
-                }
-                else if (TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) && !TeamManager.getLeaderUUID(level, oldTeam.id()).equals(sourcePlayer.getUUID()))
-                {
-                    context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyPermission"));
-                    return 0;
-                }
-                else if ((!TeamManager.isInTeam(level, sourcePlayer.getUUID(), oldTeam.id()) || !oldTeam.leader().equals(sourcePlayer.getUUID())) && context.getSource().hasPermission(Commands.LEVEL_GAMEMASTERS))
-                {
-                    TeamManager.removeMember(level, player.getUUID());
-
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.modifyKickSuccess", oldTeam.name()), true);
-                    player.displayClientMessage(Component.translatable("lithicclaims.command.team.kicked", oldTeam.name()).withStyle(ChatFormatting.RED), true);
-                    return 1;
-                }
-                else
-                {
-                    context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyPermission"));
-                    return 0;
-                }
-            }
-
-            return 0;
-        }
-        catch (Exception e)
-        {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
-        }
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.disband", team.name()), false);
+        return 1;
     }
 
-    private static int executeTeamInfo(CommandContext<CommandSourceStack> context)
+    private static int info(CommandContext<CommandSourceStack> context, Team team)
     {
-        try
-        {
-            Level level = context.getSource().getLevel();
-            Team team = getTeamByNameOrUUID(context, "name | uuid");
-
-            if (team.id().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.noTeamFound", StringArgumentType.getString(context, "name | uuid")));
-                return 0;
-            }
-
-            String leaderName = UsernameCache.containsUUID(team.leader()) ? UsernameCache.getLastKnownUsername(team.leader()) : "Unknown";
-
-            String result = parseInstant(team.stanceCooldown());
-
-            Component teamComponent = Component.literal("Team: \n").withStyle(ChatFormatting.AQUA)
-            .append(Component.literal("ID: ").withStyle(ChatFormatting.AQUA)
-            .append(Component.literal(String.format("%s\n", team.id().toString())).withStyle(ChatFormatting.GREEN)
-            .append(Component.literal("Leader: ").withStyle(ChatFormatting.AQUA)
-            .append(Component.literal(String.format("%s\n", leaderName)).withStyle(ChatFormatting.GREEN)
-            .append(Component.literal("Name: ").withStyle(ChatFormatting.AQUA)
-            .append(Component.literal(String.format("%s\n", team.name())).withStyle(ChatFormatting.GREEN)
-            .append(Component.literal("Number Of claims: ").withStyle(ChatFormatting.AQUA)
-            .append(Component.literal(String.format("%d\n", team.ownedClaims().size())).withStyle(ChatFormatting.GREEN)
-            .append(Component.literal("Number Of Members: ").withStyle(ChatFormatting.AQUA)
-            .append(Component.literal(String.format("%d\n", team.members().size())).withStyle(ChatFormatting.GREEN)
-            .append(Component.literal("Stance: ").withStyle(ChatFormatting.AQUA)
-            .append(Component.literal(String.format("%s\n", Character.toUpperCase(team.stance().toString().charAt(0)) + team.stance().toString().substring(1))).withStyle(ChatFormatting.GREEN)
-            .append(Component.literal("Colour: ").withStyle(ChatFormatting.AQUA)
-            .append(Component.literal(String.format("0x%06X\n", team.colour())).withStyle(ChatFormatting.GREEN)
-            .append(Component.literal("Stance Cooldown: ").withStyle(ChatFormatting.AQUA)
-            .append(Component.literal(result).withStyle(ChatFormatting.GREEN)))))))))))))))));
-
-            context.getSource().sendSuccess(() -> teamComponent, true);
-            return 1;
-        }
-        catch (Exception e)
-        {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
-            return 0;
-        }
+        context.getSource().sendSuccess(() -> teamInfo(team), false);
+        return 1;
     }
 
-    private static int executeTeamDisband(CommandContext<CommandSourceStack> context)
+    private static int listTeams(CommandContext<CommandSourceStack> context)
     {
-        try
+        Map<UUID, Team> activeTeams = TeamManager.getActiveTeams(context.getSource().getLevel());
+
+        if (activeTeams.isEmpty())
         {
-            final Team team = getTeamByNameOrUUID(context, "name | uuid");
-            if (team.id().equals(Team.ZERO_UUID))
-            {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.noTeamFound", StringArgumentType.getString(context, "name | uuid")));
-                return 0;
-            }
-
-            Level level = context.getSource().getLevel();
-
-            if (context.getSource().isPlayer())
-            {
-                Player sourcePlayer = context.getSource().getPlayerOrException();
-                if (TeamManager.isInTeam(level, sourcePlayer.getUUID(), team.id()) && TeamManager.getLeaderUUID(level, team.id()).equals(sourcePlayer.getUUID()))
-                {
-                    TeamManager.teamCleanUp(level, team);
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.removeSuccess", team.name()), true);
-                    return 1;
-                }
-                else if (TeamManager.isInTeam(level, sourcePlayer.getUUID(), team.id()) && !TeamManager.getLeaderUUID(level, team.id()).equals(sourcePlayer.getUUID()))
-                {
-                    context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyPermission"));
-                    return 0;
-                }
-                else if (!TeamManager.isInTeam(level, sourcePlayer.getUUID(), team.id()) && context.getSource().hasPermission(Commands.LEVEL_GAMEMASTERS))
-                {
-                    TeamManager.teamCleanUp(level, team);
-                    context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.removeSuccess", team.name()), true);
-                    return 1;
-                }
-                else
-                {
-                    context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.modifyPermission"));
-                    return 0;
-                }
-            }
-
+            context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.listFail"));
             return 0;
         }
-        catch (Exception e)
+
+        for (Team team : activeTeams.values())
         {
-            context.getSource().sendFailure(Component.literal("Error: " + e.getLocalizedMessage()));
+            context.getSource().sendSuccess(() -> teamInfo(team), false);
+        }
+
+        return 1;
+    }
+
+    private static int leave(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
+    {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        Level level = context.getSource().getLevel();
+        Team team = LithicClaimsTeamArgument.getPlayerTeam(context);
+
+        TeamManager.removeMember(level, player);
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.leave", team.name()), false);
+        return 1;
+    }
+
+    private static int create(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
+    {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        Level level = context.getSource().getLevel();
+
+        String name = StringArgumentType.getString(context, "name");
+        Stance stance = LithicClaimsStanceArgument.getStance(context, "stance");
+        int colour = IntegerArgumentType.getInteger(context, "colour");
+
+        Team existing = TeamManager.getTeamByPlayer(level, player.getUUID());
+        if (!existing.id().equals(Team.ZERO_UUID))
+        {
+            context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.createFail", existing.name()));
             return 0;
         }
+
+        Team team = TeamManager.createTeam(level, name, player, stance, colour);
+        TeamManager.saveAttachment(level, team);
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.createTeam", team.name()), false);
+        return 1;
+    }
+
+    private static int resetCooldown(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
+    {
+        Team team = LithicClaimsTeamArgument.getTeam(context, "team");
+        float stanceCooldown = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
+
+        TeamManager.saveAttachment(context.getSource().getLevel(), team.withStanceCooldown(Instant.now().minusSeconds(Math.round(stanceCooldown * 60 * 60))));
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.resetCooldown", team.name()), false);
+        return 1;
     }
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher)
     {
         LiteralArgumentBuilder<CommandSourceStack> baseCommand = Commands.literal("lithic_claims");
-
-        // Claim Commands
-        LiteralArgumentBuilder<CommandSourceStack> claimCommand = Commands.literal("claim").requires(s -> s.hasPermission(Commands.LEVEL_GAMEMASTERS));
-        LiteralArgumentBuilder<CommandSourceStack> claimCommandRemove = Commands.literal("remove");
-        LiteralArgumentBuilder<CommandSourceStack> claimCommandInfo = Commands.literal("info");
-        LiteralArgumentBuilder<CommandSourceStack> claimCommandList = Commands.literal("list");
-
-        claimCommand.then(claimCommandRemove.then(Commands.argument("location", BlockPosArgument.blockPos()).executes(LithicClaimsCommands::executeClaimRemove)));
-        claimCommand.then(claimCommandInfo.then(Commands.argument("location", BlockPosArgument.blockPos()).executes(LithicClaimsCommands::executeClaimInfo)));
-        claimCommand.then(claimCommandList.executes(LithicClaimsCommands::executeListClaims));
-
-        // Claim Modify
-        LiteralArgumentBuilder<CommandSourceStack> claimCommandModify = Commands.literal("modify");
-        LiteralArgumentBuilder<CommandSourceStack> claimCommandModifyOwner = Commands.literal("owner");
-        LiteralArgumentBuilder<CommandSourceStack> claimCommandModifyArea = Commands.literal("area");
-
-        claimCommand.then(claimCommandModify.then(Commands.argument("location", BlockPosArgument.blockPos()).then(claimCommandModifyOwner.then(Commands.argument("name | uuid", StringArgumentType.string()).executes(LithicClaimsCommands::executeClaimModifyOwner)))));
-        claimCommand.then(claimCommandModify.then(Commands.argument("location", BlockPosArgument.blockPos()).then(claimCommandModifyArea.then(Commands.argument("radius", IntegerArgumentType.integer(0, 128)).executes(LithicClaimsCommands::executeClaimModifyArea)))));
-
-        // Team Commands
+        LiteralArgumentBuilder<CommandSourceStack> claimCommand = Commands.literal("claim").requires(source -> source.hasPermission(Commands.LEVEL_GAMEMASTERS));
         LiteralArgumentBuilder<CommandSourceStack> teamCommand = Commands.literal("team");
-        LiteralArgumentBuilder<CommandSourceStack> teamCommandResetCooldown = Commands.literal("reset_cooldown").requires(s -> s.hasPermission(Commands.LEVEL_GAMEMASTERS));
-        LiteralArgumentBuilder<CommandSourceStack> teamCommandCreate = Commands.literal("create");
-        LiteralArgumentBuilder<CommandSourceStack> teamCommandLeave = Commands.literal("leave");
-        LiteralArgumentBuilder<CommandSourceStack> teamCommandList = Commands.literal("list");
-        LiteralArgumentBuilder<CommandSourceStack> teamCommandRelations = Commands.literal("relations");
-        LiteralArgumentBuilder<CommandSourceStack> teamCommandKick = Commands.literal("kick");
-        LiteralArgumentBuilder<CommandSourceStack> teamCommandInfo = Commands.literal("info");
-        LiteralArgumentBuilder<CommandSourceStack> teamCommandDisband = Commands.literal("disband");
 
-        teamCommand.then(teamCommandCreate.then(Commands.argument("name", StringArgumentType.string()).then(Commands.argument("stance", StringArgumentType.string()).then(Commands.argument("colour", IntegerArgumentType.integer(0, 16777215)).executes(LithicClaimsCommands::executeTeamCreate)))));
-        teamCommand.then(teamCommandRelations.then(Commands.argument("name | uuid", StringArgumentType.string()).then(Commands.argument("stance", StringArgumentType.string()).executes(LithicClaimsCommands::executeTeamRelations))));
-        teamCommand.then(teamCommandKick.then(Commands.argument("name | uuid", StringArgumentType.string()).then(Commands.argument("player", EntityArgument.player()).executes(LithicClaimsCommands::executeTeamKick))));
-        teamCommand.then(teamCommandResetCooldown.then(Commands.argument("name | uuid", StringArgumentType.string()).executes(LithicClaimsCommands::executeTeamResetCooldown)));
-        teamCommand.then(teamCommandDisband.then(Commands.argument("name | uuid", StringArgumentType.string()).executes(LithicClaimsCommands::executeTeamDisband)));
-        teamCommand.then(teamCommandInfo.then(Commands.argument("name | uuid", StringArgumentType.string()).executes(LithicClaimsCommands::executeTeamInfo)));
-        teamCommand.then(teamCommandList.executes(LithicClaimsCommands::executeListTeams));
-        teamCommand.then(teamCommandLeave.executes(LithicClaimsCommands::executeTeamLeave));
+        for (Map.Entry<String, ClaimCommand> entry : CLAIM_COMMANDS.entrySet())
+        {
+            attachClaim(claimCommand, entry.getKey(), entry.getValue());
+        }
 
-        // Team Modify
-        LiteralArgumentBuilder<CommandSourceStack> teamCommandModify = Commands.literal("modify");
-        LiteralArgumentBuilder<CommandSourceStack> teamCommandModifyLeader = Commands.literal("leader");
-        LiteralArgumentBuilder<CommandSourceStack> teamCommandModifyName = Commands.literal("name");
-        LiteralArgumentBuilder<CommandSourceStack> teamCommandModifyStance = Commands.literal("stance");
-        LiteralArgumentBuilder<CommandSourceStack> teamCommandModifyColour = Commands.literal("colour");
+        claimCommand.then(Commands.literal("list").executes(LithicClaimsCommands::list));
 
-        teamCommandModify.then(Commands.argument("name | uuid", StringArgumentType.string()).then(teamCommandModifyLeader.then(Commands.argument("player", EntityArgument.player()).executes(LithicClaimsCommands::executeTeamModifyLeader))));
-        teamCommandModify.then(Commands.argument("name | uuid", StringArgumentType.string()).then(teamCommandModifyName.then(Commands.argument("name", StringArgumentType.string()).executes(LithicClaimsCommands::executeTeamModifyName))));
-        teamCommandModify.then(Commands.argument("name | uuid", StringArgumentType.string()).then(teamCommandModifyStance.then(Commands.argument("stance", StringArgumentType.string()).executes(LithicClaimsCommands::executeTeamModifyStance))));
-        teamCommandModify.then(Commands.argument("name | uuid", StringArgumentType.string()).then(teamCommandModifyColour.then(Commands.argument("colour", IntegerArgumentType.integer(0, 16777215)).executes(LithicClaimsCommands::executeTeamModifyColour))));
-        teamCommand.then(teamCommandModify);
+        for (Map.Entry<String, TeamCommand> entry : TEAM_COMMANDS.entrySet())
+        {
+            attachTeam(teamCommand, entry.getKey(), entry.getValue());
+        }
+
+        teamCommand.then(Commands.literal("list").executes(LithicClaimsCommands::listTeams));
+        teamCommand.then(Commands.literal("leave").executes(LithicClaimsCommands::leave));
+        teamCommand.then(Commands.literal("reset_cooldown").requires(source -> source.hasPermission(Commands.LEVEL_GAMEMASTERS)).then(LithicClaimsTeamArgument.teamArgument("team").executes(LithicClaimsCommands::resetCooldown)));
+
+        LiteralArgumentBuilder<CommandSourceStack> createCommand = Commands.literal("create");
+        RequiredArgumentBuilder<CommandSourceStack, String> createName = Commands.argument("name", StringArgumentType.string());
+        RequiredArgumentBuilder<CommandSourceStack, Stance> createStance = Commands.argument("stance", LithicClaimsStanceArgument.stance());
+        RequiredArgumentBuilder<CommandSourceStack, Integer> createColour = Commands.argument("colour", IntegerArgumentType.integer(0, 16777215));
+
+        createColour.executes(LithicClaimsCommands::create);
+        createStance.then(createColour);
+        createName.then(createStance);
+        createCommand.then(createName);
+        teamCommand.then(createCommand);
 
         baseCommand.then(claimCommand);
         baseCommand.then(teamCommand);
-
         dispatcher.register(baseCommand);
     }
 }

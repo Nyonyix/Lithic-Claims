@@ -33,6 +33,6 @@ public record Claim(
     public static Claim createDefault() {return  new Claim(new AABB(0, 0, 0, 0, 0, 0), Team.ZERO_UUID, BlockPos.ZERO, 0);}
     public Claim withClaimArea(AABB claimArea) {return new Claim(claimArea, this.owner, this.location, this.creationTick);}
     public Claim withOwner(UUID owner) {return new Claim(this.claimArea, owner, this.location, this.creationTick);}
-    public Claim withLocation(BlockPos pos) {return new Claim(this.claimArea, this.owner, location, this.creationTick);}
+    public Claim withLocation(BlockPos pos) {return new Claim(this.claimArea, this.owner, pos, this.creationTick);}
     public Claim withCreationTick(long creationTick) {return new Claim(this.claimArea, this.owner, this.location, creationTick);}
 }

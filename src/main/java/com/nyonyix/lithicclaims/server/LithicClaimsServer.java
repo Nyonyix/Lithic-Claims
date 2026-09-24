@@ -3,6 +3,7 @@ package com.nyonyix.lithicclaims.server;
 import com.mojang.logging.LogUtils;
 import com.nyonyix.lithicclaims.LithicClaims;
 import com.nyonyix.lithicclaims.command.LithicClaimsCommands;
+import com.nyonyix.lithicclaims.command.LithicClaimsCommandsOld;
 import com.nyonyix.lithicclaims.data.LithicClaimsTags;
 import com.nyonyix.lithicclaims.data.Stance;
 import com.nyonyix.lithicclaims.data.attachment.LithicClaimsAttachments;
@@ -17,6 +18,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.data.DataGenerator;
 import net.minecraft.data.PackOutput;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
@@ -30,6 +33,7 @@ import net.neoforged.neoforge.event.entity.player.AttackEntityEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.level.ExplosionEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import org.slf4j.Logger;
 
 import java.time.Instant;
@@ -53,8 +57,23 @@ public class LithicClaimsServer
     }
 
     @SubscribeEvent
+    public static void onServerTick(ServerTickEvent.Post event)
+    {
+        MinecraftServer server = event.getServer();
+
+        for (ServerLevel level : server.getAllLevels())
+        {
+            if (server.getTickCount() % 20 == 0)
+            {
+                ClaimManager.onTick(level);
+            }
+        }
+    }
+
+    @SubscribeEvent
     public static void onRegisterCommands(RegisterCommandsEvent event)
     {
+//        LithicClaimsCommandsOld.register(event.getDispatcher());
         LithicClaimsCommands.register(event.getDispatcher());
     }
 
