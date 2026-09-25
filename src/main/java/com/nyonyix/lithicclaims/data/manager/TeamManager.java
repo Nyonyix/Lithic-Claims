@@ -97,7 +97,8 @@ public class TeamManager
             name = suffix.isEmpty() ? prefix + "1" : prefix + (Long.parseLong(suffix) + 1);
         }
 
-        Team team = new Team(teamUUID, playerUUID, name, List.of(), members, stance, colour, Instant.now());
+        Instant teamCooldown = Instant.now().minusSeconds(Math.round((float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble() * 60 * 60));
+        Team team = new Team(teamUUID, playerUUID, name, List.of(), members, stance, colour, teamCooldown);
         return team;
     }
 
@@ -246,29 +247,4 @@ public class TeamManager
 
         return StanceChange.NOT_ALLOWED;
     }
-
-//    public static void changeTeamStance(Level level, Team team, Stance stance)
-//    {
-//        float stanceCooldown = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
-//        Instant cooldownEnd = team.stanceCooldown().plusSeconds(Math.round(stanceCooldown * 60 * 60));
-//
-//        if (Instant.now().isBefore(cooldownEnd)) return;
-//
-//        switch (team.stance())
-//        {
-//            case NEUTRAL ->
-//            {
-//                team = team.withStance(stance).withStanceCooldown(Instant.now());
-//                saveAttachment(level, team);
-//            }
-//            case HOSTILE, PEACEFUL ->
-//            {
-//                if (stance.equals(Stance.NEUTRAL))
-//                {
-//                    team = team.withStance(stance).withStanceCooldown(Instant.now());
-//                    saveAttachment(level, team);
-//                }
-//            }
-//        }
-//    }
 }

@@ -7,6 +7,7 @@ import com.nyonyix.lithicclaims.data.attachment.LithicClaimsAttachments;
 import com.nyonyix.lithicclaims.data.attachment.TeamAttachment;
 import com.nyonyix.lithicclaims.data.record.Claim;
 import com.nyonyix.lithicclaims.data.record.Team;
+import it.unimi.dsi.fastutil.Pair;
 import net.dries007.tfc.util.calendar.Calendars;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
@@ -23,8 +24,14 @@ import java.util.*;
 public class ClaimManager
 {
     private static Map<ResourceKey<Level>, Map<BlockPos, Integer>> canAcceptMember = new HashMap<>();
+    private static Map<ResourceKey<Level>, Map<BlockPos, Boolean>> isProtected = new HashMap<>();
 
-    private static boolean isProtected(Level level, Claim claim)
+    public static boolean getIsProtected(Level level, Claim claim)
+    {
+        return isProtected.getOrDefault(level.dimension(), Map.of(claim.location(), false)).getOrDefault(claim.location(), false);
+    }
+
+    public static boolean isProtected(Level level, Claim claim)
     {
         Team ownerTeam = TeamManager.getTeam(level, claim.owner());
         float wanderDist = (float) ServerConfig.PROTECTION_MEMBER_DIST_WANDER.getAsDouble();
@@ -124,7 +131,7 @@ public class ClaimManager
         {
             for (Claim claim : activeClaims.values())
             {
-                if (claim.location().equals(pos) && !claim.owner().equals(Team.ZERO_UUID)) // if claim exists
+                if (claim.location().equals(pos)) // if claim exists
                 {
                     if (player.getUUID().equals(TeamManager.getTeam(level, claim.owner()).leader())) // if clicker is leader
                     {
@@ -199,7 +206,22 @@ public class ClaimManager
             if (claim.owner().equals(Team.ZERO_UUID))
             {
                 removeClaim(level, claim);
+                canAcceptMember.get(level.dimension()).remove(claim.location());
+                isProtected.get(level.dimension()).remove(claim.location());
                 continue;
+            }
+
+            if (!isProtected.containsKey(level.dimension()))
+            {
+                Map<BlockPos, Boolean> claimProtection = new HashMap<>();
+                claimProtection.put(claim.location(), isProtected(level, claim));
+                isProtected.put(level.dimension(), claimProtection);
+            }
+            else
+            {
+                Map<BlockPos, Boolean> claimProtection = new HashMap<>();
+                claimProtection.put(claim.location(), isProtected(level, claim));
+                isProtected.put(level.dimension(), claimProtection);
             }
 
             // Do other stuff

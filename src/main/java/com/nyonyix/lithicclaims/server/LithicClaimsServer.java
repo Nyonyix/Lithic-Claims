@@ -3,7 +3,6 @@ package com.nyonyix.lithicclaims.server;
 import com.mojang.logging.LogUtils;
 import com.nyonyix.lithicclaims.LithicClaims;
 import com.nyonyix.lithicclaims.command.LithicClaimsCommands;
-import com.nyonyix.lithicclaims.command.LithicClaimsCommandsOld;
 import com.nyonyix.lithicclaims.data.LithicClaimsTags;
 import com.nyonyix.lithicclaims.data.Stance;
 import com.nyonyix.lithicclaims.data.attachment.LithicClaimsAttachments;
@@ -21,12 +20,15 @@ import net.minecraft.data.PackOutput;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 
+import net.neoforged.neoforge.client.event.ClientChatReceivedEvent;
 import net.neoforged.neoforge.data.event.GatherDataEvent;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.entity.player.AttackEntityEvent;
@@ -36,13 +38,25 @@ import net.neoforged.neoforge.event.level.ExplosionEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import org.slf4j.Logger;
 
-import java.time.Instant;
+import javax.annotation.Nullable;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 @EventBusSubscriber(modid = LithicClaims.MODID)
 public class LithicClaimsServer
 {
     public static final Logger LOGGER = LogUtils.getLogger();
+
+    private static boolean deny(Level level, BlockPos pos, @Nullable Entity source)
+    {
+        Claim claim = ClaimManager.getClaimContains(level, pos);
+
+        if (claim.owner().equals(Team.ZERO_UUID)) return false;
+        if ((!ClaimManager.getIsProtected(level, claim))) return false;
+
+        return !(source instanceof Player p && TeamManager.isInTeam(level, p.getUUID(), claim.owner()));
+    }
 
     @SubscribeEvent
     static void gatherData(GatherDataEvent event)
@@ -90,9 +104,16 @@ public class LithicClaimsServer
         BlockPos pos = event.getPos();
         BlockState state = level.getBlockState(pos);
 
+        Claim claim  = ClaimManager.getClaimContains(level, pos);
+        if (!state.is(LithicClaimsTags.Blocks.CLAIM_MARKERS) && ClaimManager.getIsProtected(level, claim)  && !TeamManager.isInTeam(level, player.getUUID(), claim.owner()) && !claim.owner().equals(Team.ZERO_UUID))
+        {
+            event.setCanceled(true);
+            return;
+        }
+
         if (state.is(LithicClaimsTags.Blocks.CLAIM_MARKERS))
         {
-            ClaimManager.trigger(level, event.getPos(), player);
+            ClaimManager.trigger(level, pos, player);
         }
     }
 
@@ -104,8 +125,11 @@ public class LithicClaimsServer
         BlockState state =level.getBlockState(pos);
         Claim claim = ClaimManager.getClaimContains(level, pos);
 
-        if (!claim.owner().equals(Team.ZERO_UUID))
-        {}
+        if (ClaimManager.getIsProtected(level, claim) && !TeamManager.isInTeam(level, event.getPlayer().getUUID(), claim.owner()) && !claim.owner().equals(Team.ZERO_UUID))
+        {
+            event.setCanceled(true);
+            return;
+        }
 
         if (state.is(LithicClaimsTags.Blocks.CLAIM_MARKERS))
         {
@@ -114,20 +138,93 @@ public class LithicClaimsServer
     }
 
     @SubscribeEvent
+    public static void onPLayerLeftClickBlock(PlayerInteractEvent.LeftClickBlock event)
+    {
+        BlockPos pos = event.getPos();
+        Level level = event.getLevel();
+        Claim claim = ClaimManager.getClaimContains(level, pos);
+
+        if (ClaimManager.getIsProtected(level, claim) && !TeamManager.isInTeam(level, event.getEntity().getUUID(), claim.owner()))
+        {
+            event.setCanceled(true);
+            return;
+        }
+    }
+
+    @SubscribeEvent
+    public static void onEntityPlaceEvent(BlockEvent.EntityPlaceEvent event)
+    {
+        BlockPos pos = event.getPos();
+        Level level = (Level) event.getLevel();
+
+        if (deny(level, pos, event.getEntity()))
+        {
+            event.setCanceled(true);
+            return;
+        }
+    }
+
+    @SubscribeEvent
+    public static void onEntityMultiPlaceEvent(BlockEvent.EntityMultiPlaceEvent event)
+    {
+        BlockPos pos = event.getPos();
+        Level level = (Level) event.getLevel();
+
+        if (deny(level, pos, event.getEntity()))
+        {
+            event.setCanceled(true);
+            return;
+        }
+    }
+
+    @SubscribeEvent
+    public static void onBlockToolModificationEvent(BlockEvent.BlockToolModificationEvent event)
+    {
+        BlockPos pos = event.getPos();
+        Level level = (Level) event.getLevel();
+        Claim claim = ClaimManager.getClaimContains(level, pos);
+
+        if (ClaimManager.getIsProtected(level, claim) && !TeamManager.isInTeam(level, event.getPlayer().getUUID(), claim.owner()))
+        {
+            event.setCanceled(true);
+            return;
+        }
+    }
+
+    @SubscribeEvent
     public static void onExplosionDetonate(ExplosionEvent.Detonate event)
     {
-        for (BlockPos pos : event.getAffectedBlocks())
+        Level level = event.getLevel();
+
+        List<BlockPos> effectedBlockPos = new ArrayList<>(event.getAffectedBlocks());
+        for (BlockPos pos : effectedBlockPos)
         {
+            Claim claim = ClaimManager.getClaimContains(level, pos);
+
+            if (deny(level, pos, event.getExplosion().getIndirectSourceEntity()))
+            {
+                event.getAffectedBlocks().remove(pos);
+                continue;
+            }
+
             if (event.getLevel().getBlockState(pos).is(LithicClaimsTags.Blocks.CLAIM_MARKERS))
             {
-                ClaimManager.claimCleanUp(event.getLevel(), pos);
+                ClaimManager.claimCleanUp(level, pos);
             }
         }
 
-        // Entity Protection
-        event.getAffectedEntities().forEach(e -> {});
+        List<Entity> effectedEntities = new ArrayList<>(event.getAffectedEntities());
+        for (Entity entity : effectedEntities)
+        {
+            BlockPos entityPos = entity.blockPosition();
+            Claim claim = ClaimManager.getClaimContains(level, entityPos);
 
-        //Block Protections
+            if (deny(level, entityPos, event.getExplosion().getIndirectSourceEntity()))
+            {
+                event.getAffectedEntities().remove(entity);
+                continue;
+            }
+        }
     }
 
     @SubscribeEvent
@@ -135,21 +232,7 @@ public class LithicClaimsServer
     {
         if (event.getTarget() instanceof Player)
         {
-            Player attacker = event.getEntity();
-            Player victim = (Player) event.getTarget();
-            Level level = event.getEntity().level();
 
-            Team attackerTeam = TeamManager.getTeamByPlayer(level, attacker.getUUID());
-            Team victimTeam = TeamManager.getTeamByPlayer(level, victim.getUUID());
-
-            if (attackerTeam.stance().equals(Stance.PEACEFUL) || victimTeam.stance().equals(Stance.PEACEFUL))
-            {
-                event.setCanceled(true);
-                return;
-            }
-
-            Instant attackTime = Instant.now();
-            attacker.setData(LithicClaimsAttachments.PLAYER_ATTACHMENT, new PlayerAttachment(attackTime));
         }
     }
 }

@@ -211,7 +211,7 @@ public class LithicClaimsCommands
         AABB newArea = AABB.ofSize(Vec3.atCenterOf(pos), radius, radius, radius);
         ClaimManager.saveAttachment(context.getSource().getLevel(), claim.withClaimArea(newArea));
 
-        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.claim.setArea", radius), false);
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.claim.setArea", radius / 2), false);
         return 1;
     }
 
