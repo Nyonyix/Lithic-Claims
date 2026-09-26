@@ -2,7 +2,9 @@
   "required": true,
   "package": "com.nyonyix.lithicclaims.mixin",
   "compatibilityLevel": "JAVA_21",
-  "mixins": [],
+  "mixins": [
+    "PlaceBlockSpecialPacketMixin"
+  ],
   "client": [],
   "injectors": {
     "defaultRequire": 1

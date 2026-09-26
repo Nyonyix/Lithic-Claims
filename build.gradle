@@ -116,6 +116,7 @@ dependencies {
     implementation "net.neoforged:neoforge:${neo_version}"
 
     implementation "${tfc_maven}"
+    implementation "${firmalife_maven}"
 
     runtimeOnly "${ferrite_maven}"
     runtimeOnly "${sodium_maven}"

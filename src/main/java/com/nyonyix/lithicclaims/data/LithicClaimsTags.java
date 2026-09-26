@@ -11,5 +11,6 @@ public class LithicClaimsTags
     public static class Blocks
     {
         public static final TagKey<Block> CLAIM_MARKERS = TagKey.create(Registries.BLOCK, ResourceLocation.fromNamespaceAndPath(LithicClaims.MODID, "claim_markers"));
+        public static final TagKey<Block> CLAIM_USE_EXCEPTION = TagKey.create(Registries.BLOCK, ResourceLocation.fromNamespaceAndPath(LithicClaims.MODID, "claim_use_exception"));
     }
 }

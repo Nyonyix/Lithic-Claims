@@ -24,12 +24,6 @@ import java.util.*;
 public class ClaimManager
 {
     private static Map<ResourceKey<Level>, Map<BlockPos, Integer>> canAcceptMember = new HashMap<>();
-    private static Map<ResourceKey<Level>, Map<BlockPos, Boolean>> isProtected = new HashMap<>();
-
-    public static boolean getIsProtected(Level level, Claim claim)
-    {
-        return isProtected.getOrDefault(level.dimension(), Map.of(claim.location(), false)).getOrDefault(claim.location(), false);
-    }
 
     public static boolean isProtected(Level level, Claim claim)
     {
@@ -190,7 +184,7 @@ public class ClaimManager
             calendarTicks = Calendars.get(level).getCalendarTicks();
         }
 
-        Claim claim = new Claim(newClaimArea, team.id(), pos, calendarTicks);
+        Claim claim = new Claim(newClaimArea, team.id(), pos, calendarTicks, true);
         saveAttachment(level, claim);
         TeamManager.addClaim(level, team, claim);
         player.displayClientMessage(Component.translatable("lithicclaims.claim.createClaim").withStyle(ChatFormatting.DARK_GREEN), true);
@@ -206,22 +200,14 @@ public class ClaimManager
             if (claim.owner().equals(Team.ZERO_UUID))
             {
                 removeClaim(level, claim);
-                canAcceptMember.get(level.dimension()).remove(claim.location());
-                isProtected.get(level.dimension()).remove(claim.location());
+                canAcceptMember.getOrDefault(level.dimension(), Map.of()).remove(claim.location());
                 continue;
             }
 
-            if (!isProtected.containsKey(level.dimension()))
+            boolean isNewlyProtected = isProtected(level, claim);
+            if (claim.isProtected() != isNewlyProtected)
             {
-                Map<BlockPos, Boolean> claimProtection = new HashMap<>();
-                claimProtection.put(claim.location(), isProtected(level, claim));
-                isProtected.put(level.dimension(), claimProtection);
-            }
-            else
-            {
-                Map<BlockPos, Boolean> claimProtection = new HashMap<>();
-                claimProtection.put(claim.location(), isProtected(level, claim));
-                isProtected.put(level.dimension(), claimProtection);
+                saveAttachment(level, claim.withIsProtected(isNewlyProtected));
             }
 
             // Do other stuff

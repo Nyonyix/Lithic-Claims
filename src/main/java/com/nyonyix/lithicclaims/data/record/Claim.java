@@ -13,7 +13,8 @@ public record Claim(
         AABB claimArea,
         UUID owner,
         BlockPos location,
-        long creationTick
+        long creationTick,
+        boolean isProtected
 )
 {
     private static final Codec<AABB> AABB_CODEC = RecordCodecBuilder.create(i -> i.group(
@@ -27,12 +28,14 @@ public record Claim(
             AABB_CODEC.fieldOf("claim_area").forGetter(Claim::claimArea),
             UUID_CODEC.fieldOf("owner").forGetter(Claim::owner),
             BlockPos.CODEC.fieldOf("location").forGetter(Claim::location),
-            Codec.LONG.fieldOf("creation_calendar_tick").forGetter(Claim::creationTick)
+            Codec.LONG.fieldOf("creation_calendar_tick").forGetter(Claim::creationTick),
+            Codec.BOOL.fieldOf("is_protected").forGetter(Claim::isProtected)
     ).apply(i, Claim::new));
 
-    public static Claim createDefault() {return  new Claim(new AABB(0, 0, 0, 0, 0, 0), Team.ZERO_UUID, BlockPos.ZERO, 0);}
-    public Claim withClaimArea(AABB claimArea) {return new Claim(claimArea, this.owner, this.location, this.creationTick);}
-    public Claim withOwner(UUID owner) {return new Claim(this.claimArea, owner, this.location, this.creationTick);}
-    public Claim withLocation(BlockPos pos) {return new Claim(this.claimArea, this.owner, pos, this.creationTick);}
-    public Claim withCreationTick(long creationTick) {return new Claim(this.claimArea, this.owner, this.location, creationTick);}
+    public static Claim createDefault() {return  new Claim(new AABB(0, 0, 0, 0, 0, 0), Team.ZERO_UUID, BlockPos.ZERO, 0, false);}
+    public Claim withClaimArea(AABB claimArea) {return new Claim(claimArea, this.owner, this.location, this.creationTick, this.isProtected);}
+    public Claim withOwner(UUID owner) {return new Claim(this.claimArea, owner, this.location, this.creationTick, this.isProtected);}
+    public Claim withLocation(BlockPos pos) {return new Claim(this.claimArea, this.owner, pos, this.creationTick, this.isProtected);}
+    public Claim withCreationTick(long creationTick) {return new Claim(this.claimArea, this.owner, this.location, creationTick, this.isProtected);}
+    public Claim withIsProtected(boolean isProtected) {return new Claim(this.claimArea, this.owner, this.location, this.creationTick, isProtected);}
 }

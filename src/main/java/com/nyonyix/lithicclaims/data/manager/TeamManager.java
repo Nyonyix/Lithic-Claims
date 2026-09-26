@@ -12,6 +12,8 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
@@ -108,11 +110,40 @@ public class TeamManager
         activeTeams.put(team.id(), team);
 
         level.setData(LithicClaimsAttachments.TEAM_ATTACHMENT, new TeamAttachment(activeTeams));
+        refreshMemberNames(level, team);
     }
 
     public static void saveAttachment(Level level, Map<UUID, Team> activeTeams)
     {
         level.setData(LithicClaimsAttachments.TEAM_ATTACHMENT, new TeamAttachment(activeTeams));
+    }
+
+    public static void refreshMemberNames(Level level, Team team)
+    {
+        MinecraftServer server = level.getServer();
+        if (server == null) return;
+        if (team.id().equals(Team.ZERO_UUID)) return;
+
+        for (UUID playerUUID : team.members())
+        {
+            ServerPlayer member = server.getPlayerList().getPlayer(playerUUID);
+            if (member == null) continue;
+
+            member.refreshDisplayName();
+            member.refreshTabListName();
+        }
+    }
+
+    public static void refreshName(Level level, UUID playerUUID)
+    {
+        MinecraftServer server = level.getServer();
+        if (server == null) return;
+
+        ServerPlayer player = server.getPlayerList().getPlayer(playerUUID);
+        if (player == null) return;
+
+        player.refreshTabListName();
+        player.refreshDisplayName();
     }
 
     public static boolean isInTeam(Level level, UUID playerUUID, UUID teamUUID)
@@ -172,6 +203,11 @@ public class TeamManager
 
         activeTeams.remove(team.id());
         saveAttachment(level, activeTeams);
+
+        for (UUID memberUUID : team.members())
+        {
+            refreshName(level, memberUUID);
+        }
     }
 
     public static void addClaim(Level level, Team team, Claim claim)
@@ -224,6 +260,7 @@ public class TeamManager
 
         team = team.withMembers(members);
         saveAttachment(level, team);
+        refreshName(level, playerUUID);
     }
 
     public static StanceChange changeTeamStance(Level level, Team team, Stance stance)
