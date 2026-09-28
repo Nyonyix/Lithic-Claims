@@ -7,6 +7,7 @@ import com.nyonyix.lithicclaims.data.manager.TeamManager;
 import com.nyonyix.lithicclaims.data.record.Claim;
 import com.nyonyix.lithicclaims.data.record.Team;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
@@ -19,6 +20,7 @@ import net.neoforged.neoforge.common.util.TriState;
 import net.neoforged.neoforge.event.entity.player.AttackEntityEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
+import net.neoforged.neoforge.event.level.BlockEvent;
 
 import javax.annotation.Nullable;
 
@@ -62,8 +64,6 @@ public class LithicClaimsCommon
     @SubscribeEvent
     public static void onRightClickBlock(PlayerInteractEvent.RightClickBlock event)
     {
-        if (event.getHand() != InteractionHand.MAIN_HAND) return;
-
         Player player = event.getEntity();
         if (player.isSpectator()) return;
 
@@ -71,21 +71,29 @@ public class LithicClaimsCommon
         BlockPos pos = event.getPos();
         BlockState state = level.getBlockState(pos);
 
-        if (!state.is(LithicClaimsTags.Blocks.CLAIM_MARKERS) && !state.is(LithicClaimsTags.Blocks.CLAIM_USE_EXCEPTION) && isDenied(level, pos, player))
+        if (state.is(LithicClaimsTags.Blocks.CLAIM_MARKERS))
         {
-            event.setCanceled(true);
-
-            if (level.isClientSide())
+            if (!level.isClientSide() && event.getHand() == InteractionHand.MAIN_HAND)
             {
-                event.setCancellationResult(InteractionResult.FAIL);
+                event.setUseItem(TriState.FALSE);
+                ClaimManager.trigger(level, pos, player);
             }
-
             return;
         }
 
-        if (!level.isClientSide() && state.is(LithicClaimsTags.Blocks.CLAIM_MARKERS))
+        if (!isDenied(level, pos, player)) return;
+
+        if (state.is(LithicClaimsTags.Blocks.CLAIM_USE_EXCEPTION) && !player.isShiftKeyDown())
         {
-            ClaimManager.trigger(level, pos, player);
+            event.setUseItem(TriState.FALSE);
+            return;
+        }
+
+
+        event.setCanceled(true);
+        if (level.isClientSide())
+        {
+            event.setCancellationResult(InteractionResult.FAIL);
         }
     }
 
@@ -131,5 +139,17 @@ public class LithicClaimsCommon
         if (!isDenied(event.getEntity().level(), event.getTarget().blockPosition(), event.getEntity())) return;
 
         event.setCanceled(true);
+    }
+
+    @SubscribeEvent
+    public static void onNeighborNotify(BlockEvent.NeighborNotifyEvent event)
+    {
+        if (!(event.getLevel() instanceof Level level) || level.isClientSide()) return;
+
+        Claim claim = ClaimManager.getClaim(level, event.getPos());
+        if (claim.owner().equals(Team.ZERO_UUID)) return;
+        if (level.getBlockState(claim.location()).is(LithicClaimsTags.Blocks.CLAIM_MARKERS)) return;
+
+        ClaimManager.claimCleanUp(level, claim);
     }
 }

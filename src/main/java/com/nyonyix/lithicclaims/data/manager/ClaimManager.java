@@ -121,53 +121,49 @@ public class ClaimManager
         float claimArea = (float) ServerConfig.CLAIM_AREA.getAsDouble();
         AABB newClaimArea = AABB.ofSize(Vec3.atCenterOf(pos), claimArea, claimArea, claimArea);
 
-        if (!activeClaims.isEmpty())
+        Claim existing = activeClaims.get(pos);
+        if (existing != null)
         {
-            for (Claim claim : activeClaims.values())
+            Team owner = TeamManager.getTeam(level, existing.owner());
+
+            if (player.getUUID().equals(owner.leader())) // if clicker is leader
             {
-                if (claim.location().equals(pos)) // if claim exists
+                canAcceptMember.put(level.dimension(), canAcceptMember.getOrDefault(level.dimension(), new HashMap<>())).put(pos, level.getServer().getTickCount());
+
+                player.displayClientMessage(Component.translatable("lithicclaims.claim.leaderClick").withStyle(ChatFormatting.DARK_GREEN), true);
+                return;
+            }
+            else if (!TeamManager.isInTeam(level, player.getUUID(), existing.owner())) // if clicker is not owner and not in claim team
+            {
+                if (!canAcceptMember.containsKey(level.dimension()) || !canAcceptMember.get(level.dimension()).containsKey(pos)) // if canAcceptMembers has the marker in its memory
                 {
-                    if (player.getUUID().equals(TeamManager.getTeam(level, claim.owner()).leader())) // if clicker is leader
-                    {
-                        canAcceptMember.put(level.dimension(), canAcceptMember.getOrDefault(level.dimension(), new HashMap<>())).put(pos, level.getServer().getTickCount());
-
-                        player.displayClientMessage(Component.translatable("lithicclaims.claim.leaderClick").withStyle(ChatFormatting.DARK_GREEN), true);
-                        return;
-                    }
-                    else if (!TeamManager.isInTeam(level, player.getUUID(), claim.owner())) // if clicker is not owner and not in claim team
-                    {
-                        if (!canAcceptMember.containsKey(level.dimension()) || !canAcceptMember.get(level.dimension()).containsKey(pos)) // if canAcceptMembers has the marker in its memory
-                        {
-                            player.displayClientMessage(Component.translatable("lithicclaims.claim.addMemberNeedLeaderClick").withStyle(ChatFormatting.RED), true);
-                            return;
-                        }
-
-                        int addMemberTimeout = ServerConfig.ADD_MEMBER_TIMEOUT.getAsInt();
-                        if (canAcceptMember.get(level.dimension()).get(pos) >= level.getServer().getTickCount() - addMemberTimeout) // if the timeout has yet to expire
-                        {
-                            TeamManager.removeMember(level, player.getUUID());
-                            TeamManager.addMember(level, player.getUUID(), claim.owner());
-
-                            player.displayClientMessage(Component.translatable("lithicclaims.claim.addMember").withStyle(ChatFormatting.DARK_GREEN), true);
-                            return;
-                        }
-                        else
-                        {
-                            player.displayClientMessage(Component.translatable("lithicclaims.claim.addMemberNeedLeaderClick").withStyle(ChatFormatting.RED), true);
-                            return;
-                        }
-                    }
-                    else
-                    {
-                        player.displayClientMessage(Component.translatable("lithicclaims.claim.inTeam").withStyle(ChatFormatting.RED), true);
-                        return;
-                    }
-                }
-                else if (newClaimArea.intersects(claim.claimArea()) && claim.owner().equals(Team.ZERO_UUID)) // if claims are placed too close together
-                {
-                    player.displayClientMessage(Component.translatable("lithicclaims.claim.overlap").withStyle(ChatFormatting.RED), true);
+                    player.displayClientMessage(Component.translatable("lithicclaims.claim.addMemberNeedLeaderClick").withStyle(ChatFormatting.RED), true);
                     return;
                 }
+
+                int addMemberTimeout = ServerConfig.ADD_MEMBER_TIMEOUT.getAsInt();
+                if (canAcceptMember.get(level.dimension()).get(pos) >= level.getServer().getTickCount() - addMemberTimeout) // if the timeout has yet to expire
+                {
+                    TeamManager.removeMember(level, player.getUUID());
+                    TeamManager.addMember(level, player.getUUID(), existing.owner());
+
+                    player.displayClientMessage(Component.translatable("lithicclaims.claim.addMember").withStyle(ChatFormatting.DARK_GREEN), true);
+                    return;
+                }
+                else
+                {
+                    player.displayClientMessage(Component.translatable("lithicclaims.claim.addMemberNeedLeaderClick").withStyle(ChatFormatting.RED), true);
+                    return;
+                }
+            }
+        }
+
+        for (Claim claim : activeClaims.values())
+        {
+            if (newClaimArea.intersects(claim.claimArea()) && !TeamManager.isInTeam(level, player.getUUID(), claim.owner())) // if claims are placed too close together
+            {
+                player.displayClientMessage(Component.translatable("lithicclaims.claim.overlap").withStyle(ChatFormatting.RED), true);
+                return;
             }
         }
 

@@ -35,7 +35,6 @@ public class LithicClaimsBlockTagProvider extends BlockTagsProvider
         tag(LithicClaimsTags.Blocks.CLAIM_USE_EXCEPTION)
                 .addTag(BlockTags.TRAPDOORS)
                 .addTag(BlockTags.DOORS)
-                .addTag(BlockTags.FENCE_GATES)
-                .addOptionalTag(FLTags.Blocks.OVEN_BLOCKS);
+                .addTag(BlockTags.FENCE_GATES);
     }
 }

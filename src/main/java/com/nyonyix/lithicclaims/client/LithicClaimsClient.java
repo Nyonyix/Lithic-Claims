@@ -1,27 +1,45 @@
 package com.nyonyix.lithicclaims.client;
 
+import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.nyonyix.lithicclaims.LithicClaims;
+import com.nyonyix.lithicclaims.client.render.ClaimAreaRender;
 import com.nyonyix.lithicclaims.common.LithicClaimsCommon;
 import com.nyonyix.lithicclaims.data.LithicClaimsTags;
+import com.nyonyix.lithicclaims.data.manager.ClaimManager;
+import com.nyonyix.lithicclaims.data.record.Claim;
+import com.nyonyix.lithicclaims.data.record.Team;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.RenderType;
+import net.minecraft.core.BlockPos;
+import net.minecraft.util.Mth;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.CollisionContext;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
-import net.neoforged.neoforge.client.event.InputEvent;
-import net.neoforged.neoforge.client.event.RenderHighlightEvent;
+import net.neoforged.neoforge.client.event.*;
 import net.neoforged.neoforge.client.gui.ConfigurationScreen;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
-import org.checkerframework.checker.signature.qual.SignatureBottom;
+
+import javax.annotation.Nullable;
+import java.util.Hashtable;
+import java.util.Iterator;
+import java.util.Map;
 
 @Mod(value = LithicClaims.MODID, dist = Dist.CLIENT)
 @EventBusSubscriber(modid = LithicClaims.MODID, value = Dist.CLIENT)
 public class LithicClaimsClient
 {
-
     public LithicClaimsClient(ModContainer container)
     {
         container.registerExtensionPoint(IConfigScreenFactory.class, ConfigurationScreen::new);
@@ -29,6 +47,12 @@ public class LithicClaimsClient
 
     @SubscribeEvent
     public static void onClientSetup(FMLClientSetupEvent event) {}
+
+    @SubscribeEvent
+    public static void onClientTick(ClientTickEvent.Post event)
+    {
+        ClaimAreaRender.INSTANCE.handleInput();
+    }
 
     @SubscribeEvent
     public static void onInteractionKey(InputEvent.InteractionKeyMappingTriggered event)
@@ -52,5 +76,17 @@ public class LithicClaimsClient
         if (!LithicClaimsCommon.isDenied(mc.level, event.getTarget().getBlockPos(), mc.player)) return;
 
         event.setCanceled(true);
+    }
+
+    @SubscribeEvent
+    public static void onRenderLevelStage(RenderLevelStageEvent event)
+    {
+        ClaimAreaRender.INSTANCE.render(event);
+    }
+
+    @SubscribeEvent
+    public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event)
+    {
+        event.register(ClaimAreaRender.TOGGLE_KEY);
     }
 }

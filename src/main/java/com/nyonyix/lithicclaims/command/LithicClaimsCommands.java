@@ -69,7 +69,7 @@ public class LithicClaimsCommands
     static
     {
         CLAIM_COMMANDS.put("owner", new ClaimCommand(() -> LithicClaimsTeamArgument.teamArgument("team"), LithicClaimsCommands::getOwner, LithicClaimsCommands::setOwner));
-        CLAIM_COMMANDS.put("area", new ClaimCommand(() -> Commands.argument("radius", IntegerArgumentType.integer(5, 64)), LithicClaimsCommands::getArea, LithicClaimsCommands::setArea));
+        CLAIM_COMMANDS.put("area", new ClaimCommand(() -> Commands.argument("radius", IntegerArgumentType.integer(32, 128)), LithicClaimsCommands::getArea, LithicClaimsCommands::setArea));
         CLAIM_COMMANDS.put("remove", new ClaimCommand(null, LithicClaimsCommands::remove, LithicClaimsCommands::remove));
         CLAIM_COMMANDS.put("info", new ClaimCommand(null, LithicClaimsCommands::info, LithicClaimsCommands::info));
     }
