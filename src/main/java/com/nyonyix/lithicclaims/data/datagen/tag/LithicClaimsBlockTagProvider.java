@@ -5,6 +5,7 @@ import com.eerussianguy.firmalife.common.FLTags;
 import com.mojang.datafixers.types.templates.Tag;
 import com.nyonyix.lithicclaims.LithicClaims;
 import com.nyonyix.lithicclaims.data.LithicClaimsTags;
+import net.dries007.tfc.common.blocks.TFCBlocks;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.data.PackOutput;
 import net.minecraft.resources.ResourceLocation;
@@ -35,6 +36,10 @@ public class LithicClaimsBlockTagProvider extends BlockTagsProvider
         tag(LithicClaimsTags.Blocks.CLAIM_USE_EXCEPTION)
                 .addTag(BlockTags.TRAPDOORS)
                 .addTag(BlockTags.DOORS)
-                .addTag(BlockTags.FENCE_GATES);
+                .add(Blocks.WATER)
+                .add(TFCBlocks.SALT_WATER.get())
+                .add(TFCBlocks.RIVER_WATER.get())
+                .add(TFCBlocks.FRESHWATER_BUBBLE_COLUMN.get())
+                .add(TFCBlocks.SALTWATER_BUBBLE_COLUMN.get());
     }
 }

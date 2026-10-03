@@ -2,7 +2,10 @@ package com.nyonyix.lithicclaims.common;
 
 import com.nyonyix.lithicclaims.LithicClaims;
 import com.nyonyix.lithicclaims.data.LithicClaimsTags;
+import com.nyonyix.lithicclaims.data.Stance;
+import com.nyonyix.lithicclaims.data.attachment.PlayerAttachment;
 import com.nyonyix.lithicclaims.data.manager.ClaimManager;
+import com.nyonyix.lithicclaims.data.manager.PlayerManager;
 import com.nyonyix.lithicclaims.data.manager.TeamManager;
 import com.nyonyix.lithicclaims.data.record.Claim;
 import com.nyonyix.lithicclaims.data.record.Team;
@@ -10,8 +13,10 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.MenuProvider;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -23,6 +28,7 @@ import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
 
 import javax.annotation.Nullable;
+import java.time.Instant;
 
 @EventBusSubscriber(modid = LithicClaims.MODID)
 public class LithicClaimsCommon
@@ -30,11 +36,16 @@ public class LithicClaimsCommon
     public static boolean isDenied(Level level, BlockPos pos, @Nullable Entity entity)
     {
         Claim claim  = ClaimManager.getClaimContains(level, pos);
+        if (!(entity instanceof Player player)) return false;
+        PlayerAttachment playerData = PlayerManager.getPlayerData(player);
+
+        Team team = TeamManager.getTeamByPlayer(level, player.getUUID());
+        Stance stance = !team.id().equals(Team.ZERO_UUID) ? team.stance() : !playerData.stance().equals(Stance.INVALID) ? playerData.stance() : Stance.NEUTRAL;
 
         if (claim.owner().equals(Team.ZERO_UUID)) return false;
-        if (!claim.isProtected()) return false;
+        if (ClaimManager.isProtected(level, claim, stance)) return true;
 
-        return !(entity instanceof Player player && TeamManager.isInTeam(level, player.getUUID(), claim.owner()));
+        return !(TeamManager.isInTeam(level, player.getUUID(), claim.owner()));
     }
 
     @SubscribeEvent
@@ -89,12 +100,33 @@ public class LithicClaimsCommon
             return;
         }
 
-
         event.setCanceled(true);
         if (level.isClientSide())
         {
             event.setCancellationResult(InteractionResult.FAIL);
         }
+    }
+
+    @SubscribeEvent(receiveCanceled = true)
+    public static void onRightClickContainer(PlayerInteractEvent.RightClickBlock event)
+    {
+        if (event.getLevel().isClientSide()) return;
+        if (event.getHand() != InteractionHand.MAIN_HAND) return;
+
+        Level level = event.getLevel();
+        BlockPos pos = event.getPos();
+
+        Player player  = event.getEntity();
+        boolean holding = !player.getMainHandItem().isEmpty() || !player.getOffhandItem().isEmpty();
+        boolean skipsBlockUse = player.isSecondaryUseActive() && holding && !(player.getOffhandItem().doesSneakBypassUse(level, pos, player) && player.getOffhandItem().doesSneakBypassUse(level, pos, player));
+        if (player.isSpectator()) return;
+        if (skipsBlockUse) return;
+
+        if (!isDenied(level, pos, player)) return;
+        if (!(level.getBlockEntity(pos) instanceof MenuProvider)) return;
+
+        PlayerAttachment data = PlayerManager.getPlayerData(player);
+        PlayerManager.saveAttachment(player, data.withLastAggressive(Instant.now()));
     }
 
     @SubscribeEvent
@@ -136,9 +168,20 @@ public class LithicClaimsCommon
     @SubscribeEvent
     public static void onAttackEntity(AttackEntityEvent event)
     {
-        if (!isDenied(event.getEntity().level(), event.getTarget().blockPosition(), event.getEntity())) return;
-
-        event.setCanceled(true);
+        if (isDenied(event.getEntity().level(), event.getTarget().blockPosition(), event.getEntity()))
+        {
+            event.setCanceled(true);
+        }
+        else if (event.getTarget() instanceof Player player)
+        {
+            PlayerAttachment data = PlayerManager.getPlayerData(player);
+            PlayerManager.saveAttachment(player, data.withLastAggressive(Instant.now()));
+        }
+        else if (!ClaimManager.getClaimContains(event.getTarget().level(), event.getTarget().blockPosition()).owner().equals(TeamManager.getTeamByPlayer(event.getEntity().level(), event.getEntity().getUUID()).id()))
+        {
+            PlayerAttachment data = PlayerManager.getPlayerData(event.getEntity());
+            PlayerManager.saveAttachment(event.getEntity(), data.withLastAggressive(Instant.now()));
+        }
     }
 
     @SubscribeEvent

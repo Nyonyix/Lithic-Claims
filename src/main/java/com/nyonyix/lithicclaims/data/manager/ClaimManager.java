@@ -4,10 +4,8 @@ import com.nyonyix.lithicclaims.server.ServerConfig;
 import com.nyonyix.lithicclaims.data.Stance;
 import com.nyonyix.lithicclaims.data.attachment.ClaimAttachment;
 import com.nyonyix.lithicclaims.data.attachment.LithicClaimsAttachments;
-import com.nyonyix.lithicclaims.data.attachment.TeamAttachment;
 import com.nyonyix.lithicclaims.data.record.Claim;
 import com.nyonyix.lithicclaims.data.record.Team;
-import it.unimi.dsi.fastutil.Pair;
 import net.dries007.tfc.util.calendar.Calendars;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
@@ -25,30 +23,17 @@ public class ClaimManager
 {
     private static Map<ResourceKey<Level>, Map<BlockPos, Integer>> canAcceptMember = new HashMap<>();
 
-    public static boolean isProtected(Level level, Claim claim)
+    public static boolean isProtected(Level level, Claim claim, Stance stance)
     {
         Team ownerTeam = TeamManager.getTeam(level, claim.owner());
         float wanderDist = (float) ServerConfig.PROTECTION_MEMBER_DIST_WANDER.getAsDouble();
-        float hostileDist = (float) ServerConfig.PROTECTION_MEMBER_DIST_HOSTILE.getAsDouble();
-        float hostileClaimDist = (float) ServerConfig.PROTECTION_CLAIM_DIST_HOSTILE.getAsDouble();
-        float memberCountPercent = (float) ServerConfig.PROTECTION_MEMBER_COUNT_PERCENT.getAsDouble();
+        float memberCountPercent = (float) ServerConfig.MEMBER_COUNT_PERCENT.getAsDouble();
 
         if (TeamManager.percentMembersOnline(level, ownerTeam.id()) < memberCountPercent) return true; // If x% is online
         if (ownerTeam.stance().equals(Stance.HOSTILE)) return false; // If owner is hostile
         if (ownerTeam.stance().equals(Stance.PEACEFUL)) return true; // if owner is peaceful
         if (TeamManager.percentMembersNearVec(level, Vec3.atCenterOf(claim.location()), ownerTeam, wanderDist) >= memberCountPercent) return false; // if members are x distance from the claim.
-
-        Map<BlockPos, Claim> activeClaims = getActiveClaims(level);
-        for (Claim listClaim : activeClaims.values())
-        {
-            if (!TeamManager.getTeam(level, listClaim.owner()).stance().equals(Stance.HOSTILE)) continue;
-            if (TeamManager.percentMembersNearVec(level, Vec3.atCenterOf(listClaim.location()), TeamManager.getTeam(level, ownerTeam.id()), hostileDist) >= memberCountPercent) return false; // if members are x distance to a hostile claim
-
-            float claimDist = (float) Vec3.atCenterOf(claim.location()).distanceToSqr(Vec3.atCenterOf(listClaim.location()));
-            if (claimDist <= hostileClaimDist * hostileClaimDist) return false; // if a hostile claim is x distance near claim
-        }
-
-        return true;
+        return !stance.equals(Stance.HOSTILE);
     }
 
     public static boolean isInClaim(Claim claim, BlockPos pos)
@@ -172,6 +157,7 @@ public class ClaimManager
         if (team.id().equals(Team.ZERO_UUID))
         {
             team = TeamManager.createTeam(level, defaultTeamName, player, Stance.NEUTRAL, 0xFFFFFF);
+
         }
 
         long calendarTicks = 0L;
@@ -200,11 +186,11 @@ public class ClaimManager
                 continue;
             }
 
-            boolean isNewlyProtected = isProtected(level, claim);
-            if (claim.isProtected() != isNewlyProtected)
-            {
-                saveAttachment(level, claim.withIsProtected(isNewlyProtected));
-            }
+//            boolean isNewlyProtected = isProtected(level, claim);
+//            if (claim.isProtected() != isNewlyProtected)
+//            {
+//                saveAttachment(level, claim.withIsProtected(isNewlyProtected));
+//            }
 
             // Do other stuff
         }

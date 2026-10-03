@@ -3,7 +3,8 @@
   "package": "com.nyonyix.lithicclaims.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
-    "PlaceBlockSpecialPacketMixin"
+    "PlaceBlockSpecialPacketMixin",
+    "PistonBaseBlockMixin"
   ],
   "client": [],
   "injectors": {

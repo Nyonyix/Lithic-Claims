@@ -11,7 +11,9 @@ import com.mojang.brigadier.exceptions.DynamicCommandExceptionType;
 import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
 import com.nyonyix.lithicclaims.command.arguments.LithicClaimsStanceArgument;
 import com.nyonyix.lithicclaims.command.arguments.LithicClaimsTeamArgument;
+import com.nyonyix.lithicclaims.command.arguments.LithicClaimsVoteArgument;
 import com.nyonyix.lithicclaims.data.Stance;
+import com.nyonyix.lithicclaims.data.TeamVote;
 import com.nyonyix.lithicclaims.data.manager.ClaimManager;
 import com.nyonyix.lithicclaims.data.manager.TeamManager;
 import com.nyonyix.lithicclaims.data.record.Claim;
@@ -65,6 +67,8 @@ public class LithicClaimsCommands
     private static final DynamicCommandExceptionType ERROR_PLAYER_NOT_IN_TEAM = new DynamicCommandExceptionType(player -> Component.translatable("lithicclaims.command.team.playerNotInTeam", player));
     private static final SimpleCommandExceptionType ERROR_NOT_IN_CLAIM = new SimpleCommandExceptionType(Component.translatableEscape("lithicclaims.argument.claim.notInClaim"));
     private static final SimpleCommandExceptionType ERROR_NOT_LEADER = new SimpleCommandExceptionType(Component.translatableEscape("lithicclaims.command.team.notLeader"));
+    private static final SimpleCommandExceptionType ERROR_NO_ACTIVE_VOTE = new SimpleCommandExceptionType(Component.translatableEscape("lithicclaims.command.team.voteNone"));
+    private static final SimpleCommandExceptionType ERROR_EXISTING_ACTIVE_VOTE = new SimpleCommandExceptionType(Component.translatableEscape("lithicclaims.command.team.voteExisting"));
 
     static
     {
@@ -310,7 +314,7 @@ public class LithicClaimsCommands
 
     private static String parseInstant(Instant cooldown)
     {
-        float stanceCooldownConfig = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
+        float stanceCooldownConfig = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsLong();
 
         Duration cooldownDiff = Duration.between(Instant.now(), cooldown.plusSeconds(Math.round(stanceCooldownConfig * 60 * 60)));
         boolean ago = cooldownDiff.isNegative();
@@ -400,7 +404,7 @@ public class LithicClaimsCommands
         {
             case ON_COOLDOWN ->
             {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.stanceCooldown", parseInstant(team.stanceCooldown())));
+                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.lastStanceChange", TeamManager.teamStancePlayTime(team).toString()));
                 return 0;
             }
             case NOT_ALLOWED ->
@@ -517,11 +521,58 @@ public class LithicClaimsCommands
     private static int resetCooldown(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
     {
         Team team = LithicClaimsTeamArgument.getTeam(context, "team");
-        float stanceCooldown = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
 
-        TeamManager.saveAttachment(context.getSource().getLevel(), team.withStanceCooldown(Instant.now().minusSeconds(Math.round(stanceCooldown * 60 * 60))));
+        TeamManager.saveAttachment(context.getSource().getLevel(), team.withStanceCooldown(Instant.EPOCH));
 
         context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.resetCooldown", team.name()), false);
+        return 1;
+    }
+
+    private static int join(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
+    {
+        Team team = LithicClaimsTeamArgument.getTeam(context, "team");
+
+        TeamManager.addMember(context.getSource().getLevel(), context.getSource().getPlayerOrException(), team);
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.join", team.name()), false);
+        return 1;
+    }
+
+    // "pluto" is a nickname for vote. It's an inside joke.
+    private static int pluto(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
+    {
+        Team team = LithicClaimsTeamArgument.getPlayerTeam(context);
+        UUID oldLeader = team.leader();
+        TeamVote votes = TeamManager.getTeamVotes(context.getSource().getLevel(), team.id());
+
+        if (votes == null)
+        {
+            throw ERROR_NO_ACTIVE_VOTE.create();
+        }
+
+        votes.castVote(context.getSource().getPlayerOrException().getUUID(), LithicClaimsVoteArgument.getVote(context, "vote"));
+        TeamManager.putTeamVote(context.getSource().getLevel(), team.id(), votes);
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.vote", UsernameCache.getLastKnownUsername(oldLeader) != null ? UsernameCache.getLastKnownUsername(oldLeader) : "Unknown", UsernameCache.getLastKnownUsername(votes.getNewLeader()) != null ? UsernameCache.getLastKnownUsername(votes.getNewLeader()) : "Unknown"), false);
+        return 1;
+    }
+
+    private static int plutoCreate(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
+    {
+        Team team = LithicClaimsTeamArgument.getPlayerTeam(context);
+        UUID oldLeader = team.leader();
+        UUID newLeader = EntityArgument.getPlayer(context, "new_leader").getUUID();
+        TeamVote votes = new TeamVote(team.members(), context.getSource().getServer().getTickCount(), oldLeader, newLeader);
+
+        if (TeamManager.getTeamVotes(context.getSource().getLevel(), team.id()) != null)
+        {
+            throw ERROR_EXISTING_ACTIVE_VOTE.create();
+        }
+
+        votes.castVote(context.getSource().getPlayerOrException().getUUID(), LithicClaimsVoteArgument.getVote(context, "vote"));
+        TeamManager.putTeamVote(context.getSource().getLevel(), team.id(), votes);
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.voteCreate", UsernameCache.getLastKnownUsername(oldLeader) != null ? UsernameCache.getLastKnownUsername(oldLeader) : "Unknown", UsernameCache.getLastKnownUsername(newLeader) != null ? UsernameCache.getLastKnownUsername(newLeader) : "Unknown"), false);
         return 1;
     }
 
@@ -546,6 +597,8 @@ public class LithicClaimsCommands
         teamCommand.then(Commands.literal("list").executes(LithicClaimsCommands::listTeams));
         teamCommand.then(Commands.literal("leave").executes(LithicClaimsCommands::leave));
         teamCommand.then(Commands.literal("reset_cooldown").requires(source -> source.hasPermission(Commands.LEVEL_GAMEMASTERS)).then(LithicClaimsTeamArgument.teamArgument("team").executes(LithicClaimsCommands::resetCooldown)));
+        teamCommand.then(Commands.literal("join").requires(source -> source.hasPermission(Commands.LEVEL_GAMEMASTERS)).then(LithicClaimsTeamArgument.teamArgument("team").executes(LithicClaimsCommands::join)));
+        teamCommand.then(Commands.literal("vote").then(LithicClaimsVoteArgument.voteArgument("vote").executes(LithicClaimsCommands::pluto).then(Commands.argument("new_leader", EntityArgument.player()).executes(LithicClaimsCommands::plutoCreate))));
 
         LiteralArgumentBuilder<CommandSourceStack> createCommand = Commands.literal("create");
         RequiredArgumentBuilder<CommandSourceStack, String> createName = Commands.argument("name", StringArgumentType.string());

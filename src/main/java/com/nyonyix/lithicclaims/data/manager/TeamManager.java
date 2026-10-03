@@ -3,15 +3,17 @@ package com.nyonyix.lithicclaims.data.manager;
 import com.mojang.logging.LogUtils;
 import com.nyonyix.lithicclaims.data.Stance;
 import com.nyonyix.lithicclaims.data.StanceChange;
+import com.nyonyix.lithicclaims.data.TeamVote;
 import com.nyonyix.lithicclaims.data.attachment.LithicClaimsAttachments;
+import com.nyonyix.lithicclaims.data.attachment.PlayerAttachment;
 import com.nyonyix.lithicclaims.data.attachment.TeamAttachment;
 import com.nyonyix.lithicclaims.data.record.Claim;
 import com.nyonyix.lithicclaims.data.record.Team;
 import com.nyonyix.lithicclaims.server.ServerConfig;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
@@ -19,12 +21,32 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
 
+import javax.annotation.Nullable;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 
 public class TeamManager
 {
+    private static final Map<ResourceKey<Level>, Map<UUID, TeamVote>> teamVotes = new HashMap<>();
+
     public static final Logger LOGGER = LogUtils.getLogger();
+
+    @Nullable
+    public static TeamVote getTeamVotes(Level level, UUID teamID)
+    {
+        return teamVotes.getOrDefault(level.dimension(), Map.of()).get(teamID);
+    }
+
+    public static void putTeamVote(Level level, UUID teamID, TeamVote votes)
+    {
+        teamVotes.computeIfAbsent(level.dimension(), k -> new HashMap<>()).put(teamID, votes);
+    }
+
+    public static Duration teamStancePlayTime(Team team)
+    {
+        return team.onlineTimes().values().stream().max(Comparator.naturalOrder()).orElse(Duration.ZERO);
+    }
 
     public static Team getTeam(Level level, UUID uuid)
     {
@@ -65,7 +87,10 @@ public class TeamManager
 
         for (Map.Entry<UUID, Team> entry : activeTeams.entrySet())
         {
-            if (entry.getValue().members().contains(playerUUID)) return entry.getValue();
+            if (entry.getValue().members().contains(playerUUID))
+            {
+                return entry.getValue();
+            }
         }
 
         return Team.createDefault();
@@ -99,8 +124,7 @@ public class TeamManager
             name = suffix.isEmpty() ? prefix + "1" : prefix + (Long.parseLong(suffix) + 1);
         }
 
-        Instant teamCooldown = Instant.now().minusSeconds(Math.round((float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble() * 60 * 60));
-        Team team = new Team(teamUUID, playerUUID, name, List.of(), members, stance, colour, teamCooldown);
+        Team team = new Team(teamUUID, playerUUID, name, new ArrayList<>(), members, new HashMap<>(), stance, colour, Instant.EPOCH);
         return team;
     }
 
@@ -217,21 +241,26 @@ public class TeamManager
         saveAttachment(level, team.withOwnedClaims(claims));
     }
 
-    public static void addMember(Level level, Player player, Team team) {addMember(level, player.getUUID(), team.id());}
+    public static void addMember(Level level, Player player, Team team)
+    {
+        List<UUID> members = new ArrayList<>(team.members());
+
+        Team playerTeam = getTeamByPlayer(level, player.getUUID());
+        if (!playerTeam.id().equals(Team.ZERO_UUID))
+        {
+            removeMember(level, player.getUUID());
+        }
+
+        members.add(player.getUUID());
+        saveAttachment(level, team.withMembers(members));
+    }
 
     public static void addMember(Level level, UUID playerUUID, UUID teamUUID)
     {
-        Team team = getTeam(level, teamUUID);
-        List<UUID> members = new ArrayList<>(team.members());
+        Player player = level.getPlayerByUUID(playerUUID);
+        if (player == null) return;
 
-        Team playerTeam = getTeamByPlayer(level, playerUUID);
-        if (!playerTeam.id().equals(Team.ZERO_UUID))
-        {
-            removeMember(level, playerUUID);
-        }
-
-        members.add(playerUUID);
-        saveAttachment(level, team.withMembers(members));
+        addMember(level, player, getTeam(level, teamUUID));
     }
 
     public static void removeMember(Level level, Player player)
@@ -250,38 +279,100 @@ public class TeamManager
            return;
        }
 
-        List<UUID> members = new ArrayList<>(team.members());
-        members.remove(playerUUID);
+       List<UUID> members = new ArrayList<>(team.members());
+       Map<UUID, Duration> onlineTimes = new HashMap<>(team.onlineTimes());
 
-        if (team.leader().equals(playerUUID))
-        {
-            team = team.withLeader(members.getFirst());
-        }
+       members.remove(playerUUID);
+       onlineTimes.remove(playerUUID);
 
-        team = team.withMembers(members);
-        saveAttachment(level, team);
-        refreshName(level, playerUUID);
+       if (team.leader().equals(playerUUID))
+       {
+           team = team.withLeader(members.getFirst());
+       }
+
+       saveAttachment(level, team.withOnlineTimes(onlineTimes).withMembers(members));
+       refreshName(level, playerUUID);
     }
 
     public static StanceChange changeTeamStance(Level level, Team team, Stance stance)
     {
-        float stanceCooldown = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsDouble();
-        Instant cooldownEnd = team.stanceCooldown().plusSeconds(Math.round(stanceCooldown * 60 * 60));
-
-        if (Instant.now().isBefore(cooldownEnd)) return StanceChange.ON_COOLDOWN;
+        long coolDownMinutes = ServerConfig.TEAM_STANCE_COOLDOWN.getAsLong();
+        Instant lastAggressive = mostRecentAggression(level, team);
+        boolean neverChanged = team.lastStanceChange().equals(Instant.EPOCH);
+        boolean neverAggressive = lastAggressive.equals(Instant.EPOCH);
+        Duration durationSinceLastAggression = Duration.between(lastAggressive, Instant.now());
+        if (team.stance().escalatesFrom(stance) && !neverChanged && teamStancePlayTime(team).compareTo(Duration.ofMinutes(coolDownMinutes)) < 0 && !neverAggressive && durationSinceLastAggression.compareTo(Duration.ofMinutes(coolDownMinutes)) < 0) return StanceChange.ON_COOLDOWN;
 
         if (team.stance() == Stance.NEUTRAL)
         {
-            saveAttachment(level, team.withStance(stance).withStanceCooldown(Instant.now()));
+            saveAttachment(level, team.withStance(stance).withStanceCooldown(Instant.now()).withOnlineTimes(new HashMap<>()));
             return StanceChange.SUCCESS;
         }
 
         if (stance.equals(Stance.NEUTRAL) && (team.stance().equals(Stance.HOSTILE) || team.stance().equals(Stance.PEACEFUL)))
         {
-            saveAttachment(level, team.withStance(stance).withStanceCooldown(Instant.now()));
+            saveAttachment(level, team.withStance(stance).withStanceCooldown(Instant.now()).withOnlineTimes(new HashMap<>()));
             return StanceChange.SUCCESS;
         }
 
         return StanceChange.NOT_ALLOWED;
+    }
+
+    public static Instant mostRecentAggression(Level level, Team team)
+    {
+        Instant mostRecent = Instant.EPOCH;
+
+        for (UUID member : team.members())
+        {
+            Player player = level.getPlayerByUUID(member);
+            if (player == null) continue;
+
+            PlayerAttachment data = PlayerManager.getPlayerData(player);
+
+            mostRecent = data.lastAggressive().isAfter(mostRecent) ?  data.lastAggressive() : mostRecent;
+        }
+
+        return mostRecent;
+    }
+
+    public static void onTick(Level level)
+    {
+        float memberVotePercent = (float) ServerConfig.MEMBER_VOTE_PERCENT.getAsDouble();
+        int voteTicks = ServerConfig.TEAM_VOTE_TICKS.getAsInt();
+        Set<UUID> toRemove = new HashSet<>();
+
+        for (Map.Entry<UUID, TeamVote>  entry : teamVotes.getOrDefault(level.dimension(), Map.of()).entrySet())
+        {
+            if (entry.getValue().getStartTick() <= level.getServer().getTickCount() - voteTicks|| entry.getValue().getPercentageYay() >= memberVotePercent)
+            {
+                Team team = getTeam(level, entry.getKey());
+                toRemove.add(team.id());
+
+                if (entry.getValue().getPercentageYay() >= memberVotePercent)
+                {
+                    saveAttachment(level, team.withLeader(entry.getValue().getNewLeader()));
+
+                    for (UUID member : team.members())
+                    {
+                        Player player = level.getPlayerByUUID(member);
+                        if (player == null) continue;
+
+                        player.displayClientMessage(Component.translatable("lithicclaims.command.team.newLeader").withStyle(ChatFormatting.GREEN), false);
+                    }
+                }
+                else
+                {
+                    for (UUID member : team.members())
+                    {
+                        Player player = level.getPlayerByUUID(member);
+                        if (player == null) continue;
+
+                        player.displayClientMessage(Component.translatable("lithicclaims.command.team.newLeaderFail").withStyle(ChatFormatting.RED), false);
+                    }
+                }
+            }
+        }
+
+        toRemove.forEach(uuid -> teamVotes.getOrDefault(level.dimension(), Map.of()).remove(uuid));
     }
 }
