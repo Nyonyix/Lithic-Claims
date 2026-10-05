@@ -18,6 +18,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.BonemealableBlock;
 import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
 
@@ -132,6 +133,8 @@ public class TeamManager
     {
         Map<UUID, Team> activeTeams = new HashMap<>(getActiveTeams(level));
         activeTeams.put(team.id(), team);
+
+        if (getActiveTeams(level).equals(activeTeams)) return;
 
         level.setData(LithicClaimsAttachments.TEAM_ATTACHMENT, new TeamAttachment(activeTeams));
         refreshMemberNames(level, team);
@@ -249,6 +252,7 @@ public class TeamManager
         if (!playerTeam.id().equals(Team.ZERO_UUID))
         {
             removeMember(level, player.getUUID());
+            if (members.contains(player.getUUID())) members.remove(player.getUUID());
         }
 
         members.add(player.getUUID());
@@ -298,10 +302,12 @@ public class TeamManager
     {
         long coolDownMinutes = ServerConfig.TEAM_STANCE_COOLDOWN.getAsLong();
         Instant lastAggressive = mostRecentAggression(level, team);
-        boolean neverChanged = team.lastStanceChange().equals(Instant.EPOCH);
-        boolean neverAggressive = lastAggressive.equals(Instant.EPOCH);
         Duration durationSinceLastAggression = Duration.between(lastAggressive, Instant.now());
-        if (team.stance().escalatesFrom(stance) && !neverChanged && teamStancePlayTime(team).compareTo(Duration.ofMinutes(coolDownMinutes)) < 0 && !neverAggressive && durationSinceLastAggression.compareTo(Duration.ofMinutes(coolDownMinutes)) < 0) return StanceChange.ON_COOLDOWN;
+
+        boolean neverChanged = team.lastStanceChange().equals(Instant.EPOCH);
+        boolean tooSoonCooldown = teamStancePlayTime(team).compareTo(Duration.ofMinutes(coolDownMinutes)) < 0;
+        boolean tooSoonLastAggressive = durationSinceLastAggression.compareTo(Duration.ofMinutes(coolDownMinutes)) < 0;
+        if (team.stance().deescalatesTo(stance) && !neverChanged && (tooSoonCooldown || tooSoonLastAggressive)) return StanceChange.ON_COOLDOWN;
 
         if (team.stance() == Stance.NEUTRAL)
         {
@@ -373,6 +379,31 @@ public class TeamManager
             }
         }
 
+        for (Team team : getActiveTeams(level).values())
+        {
+            Map<UUID, Duration> onlineTimes = new HashMap<>(team.onlineTimes());
+
+            for (UUID member : team.members())
+            {
+                Player player = level.getPlayerByUUID(member);
+                if (player == null) continue;
+
+                PlayerAttachment playerData = PlayerManager.getPlayerData(player);
+                Instant sessionStart = playerData.lastLogin().isAfter(team.lastStanceChange()) ? playerData.lastLogin() : team.lastStanceChange();
+
+                onlineTimes.put(member, Duration.between(sessionStart, Instant.now()));
+            }
+
+            saveAttachment(level, team.withOnlineTimes(onlineTimes));
+        }
+
         toRemove.forEach(uuid -> teamVotes.getOrDefault(level.dimension(), Map.of()).remove(uuid));
+    }
+
+    public static float getClaimAreaMulti(Team team)
+    {
+        int teamSize = team.members().size() + 3;
+
+        return (float) (2.5 - 0.5 * Math.exp((double) -(teamSize - 1) / 3));
     }
 }

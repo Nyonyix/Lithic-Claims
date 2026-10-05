@@ -89,14 +89,17 @@ public class LithicClaimsServer
     {
         Level level = event.getPlayer().level();
         BlockPos pos = event.getPos();
-        Player player =event.getPlayer();
+        Player player = event.getPlayer();
+
+        Claim claim = ClaimManager.getClaimContains(level, pos);
+        Team playerTeam = TeamManager.getTeamByPlayer(level, player.getUUID());
 
         if (LithicClaimsCommon.isDenied(level, pos, event.getPlayer()))
         {
             event.setCanceled(true);
             return;
         }
-        else if (!ClaimManager.getClaimContains(level, pos).owner().equals(TeamManager.getTeamByPlayer(level, player.getUUID())))
+        else if (!claim.owner().equals(Team.ZERO_UUID) && !claim.owner().equals(playerTeam.id()))
         {
             PlayerAttachment data = PlayerManager.getPlayerData(player);
             PlayerManager.saveAttachment(player, data.withLastAggressive(Instant.now()));
@@ -215,14 +218,15 @@ public class LithicClaimsServer
         List<UUID> debugUUIDs = List.of(UUID.fromString("db52851e-3851-4688-af6b-e71fb1069e43"), UUID.fromString("97bb311e-a082-4cd4-a082-fdcb318d6432"));
         if (debugUUIDs.contains(player.getUUID())) player.connection.disconnect(Component.literal("\"Unhandled exception. System.DllNotFoundException: Unable to load DLL 'null': The specified module could not be found. (0x8007007E)\""));
 
-        if (data.stance().equals(Stance.INVALID))
-        {
-            PlayerManager.saveAttachment(player, data.withStance(Stance.NEUTRAL).withLastLogin(Instant.now()));
-        }
-        else
-        {
-            PlayerManager.saveAttachment(player, data.withLastLogin(Instant.now()));
-        }
+        PlayerManager.saveAttachment(player, data.withLastLogin(Instant.now()));
+//        if (data.stance().equals(Stance.INVALID))
+//        {
+//            PlayerManager.saveAttachment(player, data.withStance(Stance.NEUTRAL).withLastLogin(Instant.now()));
+//        }
+//        else
+//        {
+//            PlayerManager.saveAttachment(player, data.withLastLogin(Instant.now()));
+//        }
     }
 
     @SubscribeEvent
@@ -235,10 +239,10 @@ public class LithicClaimsServer
         PlayerAttachment data = PlayerManager.getPlayerData(player);
         Instant sessionStart = data.lastLogin().isAfter(team.lastStanceChange()) ? data.lastLogin() : team.lastStanceChange();
         Duration spentOnline = Duration.between(sessionStart, Instant.now());
-        Map<UUID, Duration> onlineTimes = new HashMap<>(team.onlineTimes());
+//        Map<UUID, Duration> onlineTimes = new HashMap<>(team.onlineTimes());
 
-        onlineTimes.merge(player.getUUID(), spentOnline, Duration::plus);
+//        onlineTimes.merge(player.getUUID(), spentOnline, Duration::plus);
         PlayerManager.saveAttachment(player, data.withOnlineTime(data.onlineTime().plus(spentOnline)));
-        TeamManager.saveAttachment(player.level(), team.withOnlineTimes(onlineTimes));
+//        TeamManager.saveAttachment(player.level(), team.withOnlineTimes(onlineTimes));
     }
 }

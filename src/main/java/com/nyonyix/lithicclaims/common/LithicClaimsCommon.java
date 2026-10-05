@@ -10,13 +10,11 @@ import com.nyonyix.lithicclaims.data.manager.TeamManager;
 import com.nyonyix.lithicclaims.data.record.Claim;
 import com.nyonyix.lithicclaims.data.record.Team;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.MenuProvider;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -33,19 +31,23 @@ import java.time.Instant;
 @EventBusSubscriber(modid = LithicClaims.MODID)
 public class LithicClaimsCommon
 {
+    public static boolean isDenied(Level level, Claim claim, @Nullable Entity entity)
+    {
+        return isDenied(level, claim.location(), entity);
+    }
+
     public static boolean isDenied(Level level, BlockPos pos, @Nullable Entity entity)
     {
         Claim claim  = ClaimManager.getClaimContains(level, pos);
         if (!(entity instanceof Player player)) return false;
-        PlayerAttachment playerData = PlayerManager.getPlayerData(player);
+//        PlayerAttachment playerData = PlayerManager.getPlayerData(player);
 
         Team team = TeamManager.getTeamByPlayer(level, player.getUUID());
-        Stance stance = !team.id().equals(Team.ZERO_UUID) ? team.stance() : !playerData.stance().equals(Stance.INVALID) ? playerData.stance() : Stance.NEUTRAL;
+//        Stance stance = !team.id().equals(Team.ZERO_UUID) ? team.stance() : !playerData.stance().equals(Stance.INVALID) ? playerData.stance() : Stance.NEUTRAL;
+        Stance stance = !team.id().equals(Team.ZERO_UUID) ? team.stance() : Stance.NEUTRAL;
 
         if (claim.owner().equals(Team.ZERO_UUID)) return false;
-        if (ClaimManager.isProtected(level, claim, stance)) return true;
-
-        return !(TeamManager.isInTeam(level, player.getUUID(), claim.owner()));
+        return !TeamManager.isInTeam(level, player.getUUID(), claim.owner()) && ClaimManager.isProtected(level, claim, stance);
     }
 
     @SubscribeEvent
@@ -87,7 +89,7 @@ public class LithicClaimsCommon
             if (!level.isClientSide() && event.getHand() == InteractionHand.MAIN_HAND)
             {
                 event.setUseItem(TriState.FALSE);
-                ClaimManager.trigger(level, pos, player);
+                ClaimManager.rightClickMarker(level, pos, player);
             }
             return;
         }
@@ -168,16 +170,27 @@ public class LithicClaimsCommon
     @SubscribeEvent
     public static void onAttackEntity(AttackEntityEvent event)
     {
+        Claim claim = ClaimManager.getClaimContains(event.getEntity().level(), event.getTarget().blockPosition());
+        Team playerTeam = TeamManager.getTeamByPlayer(event.getEntity().level(), event.getEntity().getUUID());
+        Stance stance = playerTeam.id().equals(Team.ZERO_UUID) ? Stance.NEUTRAL : playerTeam.stance();
+
         if (isDenied(event.getEntity().level(), event.getTarget().blockPosition(), event.getEntity()))
         {
             event.setCanceled(true);
         }
-        else if (event.getTarget() instanceof Player player)
+        else if ((event.getTarget() instanceof Player) && stance.equals(Stance.PEACEFUL))
         {
+            event.setCanceled(true);
+        }
+        else if (event.getTarget() instanceof Player target)
+        {
+            if (TeamManager.isInTeam(event.getEntity().level(), target.getUUID(), playerTeam.id())) return;
+
+            Player player = event.getEntity();
             PlayerAttachment data = PlayerManager.getPlayerData(player);
             PlayerManager.saveAttachment(player, data.withLastAggressive(Instant.now()));
         }
-        else if (!ClaimManager.getClaimContains(event.getTarget().level(), event.getTarget().blockPosition()).owner().equals(TeamManager.getTeamByPlayer(event.getEntity().level(), event.getEntity().getUUID()).id()))
+        else if (!claim.owner().equals(Team.ZERO_UUID) && !claim.owner().equals(playerTeam.id()))
         {
             PlayerAttachment data = PlayerManager.getPlayerData(event.getEntity());
             PlayerManager.saveAttachment(event.getEntity(), data.withLastAggressive(Instant.now()));

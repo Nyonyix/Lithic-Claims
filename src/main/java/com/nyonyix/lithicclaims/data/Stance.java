@@ -24,13 +24,13 @@ public enum Stance
         return this != INVALID;
     }
 
-    public boolean escalatesFrom(Stance previous)
+    public boolean escalatesTo(Stance incoming)
     {
-        return isKnown() && previous.isKnown() && aggression > previous.aggression();
+        return isKnown() && incoming.isKnown() && incoming.aggression() > this.aggression ;
     }
 
-    public boolean deescalatesFrom(Stance previous)
+    public boolean deescalatesTo(Stance incoming)
     {
-        return isKnown() && previous.isKnown() && aggression < previous.aggression();
+        return isKnown() && incoming.isKnown() && incoming.aggression() < this.aggression;
     }
 }

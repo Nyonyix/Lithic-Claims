@@ -1,5 +1,6 @@
 package com.nyonyix.lithicclaims.data.manager;
 
+import com.nyonyix.lithicclaims.data.attachment.PlayerAttachment;
 import com.nyonyix.lithicclaims.server.ServerConfig;
 import com.nyonyix.lithicclaims.data.Stance;
 import com.nyonyix.lithicclaims.data.attachment.ClaimAttachment;
@@ -17,6 +18,8 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.fml.ModList;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.*;
 
 public class ClaimManager
@@ -32,6 +35,7 @@ public class ClaimManager
         if (TeamManager.percentMembersOnline(level, ownerTeam.id()) < memberCountPercent) return true; // If x% is online
         if (ownerTeam.stance().equals(Stance.HOSTILE)) return false; // If owner is hostile
         if (ownerTeam.stance().equals(Stance.PEACEFUL)) return true; // if owner is peaceful
+        if (stance.equals(Stance.PEACEFUL)) return true; // if attacker is peaceful
         if (TeamManager.percentMembersNearVec(level, Vec3.atCenterOf(claim.location()), ownerTeam, wanderDist) >= memberCountPercent) return false; // if members are x distance from the claim.
         return !stance.equals(Stance.HOSTILE);
     }
@@ -79,6 +83,9 @@ public class ClaimManager
     {
         Map<BlockPos, Claim> activeClaims = new HashMap<>(getActiveClaims(level));
         activeClaims.put(claim.location(), claim);
+
+        if (getActiveClaims(level).equals(activeClaims)) return;
+
         level.setData(LithicClaimsAttachments.CLAIM_ATTACHMENT, new ClaimAttachment(activeClaims));
     }
 
@@ -100,11 +107,9 @@ public class ClaimManager
         saveAttachment(level, activeClaims);
     }
 
-    public static void trigger(Level level, BlockPos pos, Player player)
+    public static void rightClickMarker(Level level, BlockPos pos, Player player)
     {
         Map<BlockPos, Claim> activeClaims = getActiveClaims(level);
-        float claimArea = (float) ServerConfig.CLAIM_AREA.getAsDouble();
-        AABB newClaimArea = AABB.ofSize(Vec3.atCenterOf(pos), claimArea, claimArea, claimArea);
 
         Claim existing = activeClaims.get(pos);
         if (existing != null)
@@ -115,7 +120,7 @@ public class ClaimManager
             {
                 canAcceptMember.put(level.dimension(), canAcceptMember.getOrDefault(level.dimension(), new HashMap<>())).put(pos, level.getServer().getTickCount());
 
-                player.displayClientMessage(Component.translatable("lithicclaims.claim.leaderClick").withStyle(ChatFormatting.DARK_GREEN), true);
+                player.displayClientMessage(Component.translatable("lithicclaims.claim.leaderClick", ServerConfig.ADD_MEMBER_TIMEOUT.getAsInt() / 20).withStyle(ChatFormatting.DARK_GREEN), true);
                 return;
             }
             else if (!TeamManager.isInTeam(level, player.getUUID(), existing.owner())) // if clicker is not owner and not in claim team
@@ -129,11 +134,23 @@ public class ClaimManager
                 int addMemberTimeout = ServerConfig.ADD_MEMBER_TIMEOUT.getAsInt();
                 if (canAcceptMember.get(level.dimension()).get(pos) >= level.getServer().getTickCount() - addMemberTimeout) // if the timeout has yet to expire
                 {
-                    TeamManager.removeMember(level, player.getUUID());
-                    TeamManager.addMember(level, player.getUUID(), existing.owner());
+                    PlayerAttachment playerData = PlayerManager.getPlayerData(player);
+                    Duration durationSinceLastAggression = Duration.between(playerData.lastAggressive(), Instant.now());
+                    Duration cooldownPeriod = Duration.ofMinutes(ServerConfig.TEAM_STANCE_COOLDOWN.getAsLong());
 
-                    player.displayClientMessage(Component.translatable("lithicclaims.claim.addMember").withStyle(ChatFormatting.DARK_GREEN), true);
-                    return;
+                    if (durationSinceLastAggression.compareTo(cooldownPeriod) > 0) // if player has been aggressive within last x duration
+                    {
+                        TeamManager.removeMember(level, player.getUUID());
+                        TeamManager.addMember(level, player.getUUID(), existing.owner());
+
+                        player.displayClientMessage(Component.translatable("lithicclaims.claim.addMember", owner.name()).withStyle(ChatFormatting.DARK_GREEN), true);
+                        return;
+                    }
+                    else
+                    {
+                        player.displayClientMessage(Component.translatable("lithicclaims.claim.addMemberAggressive").withStyle(ChatFormatting.RED), true);
+                        return;
+                    }
                 }
                 else
                 {
@@ -143,6 +160,21 @@ public class ClaimManager
             }
         }
 
+        Team team = TeamManager.getTeamByPlayer(level, player.getUUID());
+        String defaultTeamName = "New Team";
+        if (team.id().equals(Team.ZERO_UUID))
+        {
+            team = TeamManager.createTeam(level, defaultTeamName, player, Stance.NEUTRAL, 0xFFFFFF);
+            player.displayClientMessage(Component.translatable("lithicclaims.team.createTeam", team.name()).withStyle(ChatFormatting.DARK_GREEN), false);
+        }
+        else if (team.ownedClaims().size() >= ServerConfig.MAX_NUMBER_CLAIMS.getAsInt())
+        {
+            player.displayClientMessage(Component.translatable("lithicclaims.team.tooManyClaims").withStyle(ChatFormatting.RED), true);
+            return;
+        }
+
+        double claimSize = ServerConfig.CLAIM_AREA.getAsDouble() * TeamManager.getClaimAreaMulti(team);
+        AABB newClaimArea = AABB.ofSize(Vec3.atCenterOf(pos), claimSize, claimSize, claimSize);
         for (Claim claim : activeClaims.values())
         {
             if (newClaimArea.intersects(claim.claimArea()) && !TeamManager.isInTeam(level, player.getUUID(), claim.owner())) // if claims are placed too close together
@@ -150,14 +182,6 @@ public class ClaimManager
                 player.displayClientMessage(Component.translatable("lithicclaims.claim.overlap").withStyle(ChatFormatting.RED), true);
                 return;
             }
-        }
-
-        Team team = TeamManager.getTeamByPlayer(level, player.getUUID());
-        String defaultTeamName = "New Team";
-        if (team.id().equals(Team.ZERO_UUID))
-        {
-            team = TeamManager.createTeam(level, defaultTeamName, player, Stance.NEUTRAL, 0xFFFFFF);
-
         }
 
         long calendarTicks = 0L;
@@ -184,6 +208,15 @@ public class ClaimManager
                 removeClaim(level, claim);
                 canAcceptMember.getOrDefault(level.dimension(), Map.of()).remove(claim.location());
                 continue;
+            }
+
+            Team owner = TeamManager.getTeam(level, claim.owner());
+            double areaSize = owner.stance().equals(Stance.PEACEFUL) ? ServerConfig.CLAIM_AREA.getAsDouble() * TeamManager.getClaimAreaMulti(owner) / 2 : ServerConfig.CLAIM_AREA.getAsDouble() * TeamManager.getClaimAreaMulti(owner);
+
+            if (claim.claimArea().getSize() != areaSize)
+            {
+                AABB newArea = AABB.ofSize(Vec3.atCenterOf(claim.location()), areaSize, areaSize, areaSize);
+                saveAttachment(level, claim.withClaimArea(newArea));
             }
 
 //            boolean isNewlyProtected = isProtected(level, claim);

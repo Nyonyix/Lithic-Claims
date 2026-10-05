@@ -55,7 +55,7 @@ public class ClaimAreaRender
     }
 
     public static final ClaimAreaRender INSTANCE =  new ClaimAreaRender();
-    public static final KeyMapping TOGGLE_KEY = new KeyMapping("key.lithicclaims.toggle_claim_areas", KeyConflictContext.IN_GAME, InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_RIGHT_ALT, "key.catagories.lithicclaims");
+    public static final KeyMapping TOGGLE_KEY = new KeyMapping("lithicclaims.key.toggle_claim_areas", KeyConflictContext.IN_GAME, InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_RIGHT_ALT, "lithicclaims.key.categories");
 
     private ClaimAreaRender() {}
 
@@ -84,7 +84,7 @@ public class ClaimAreaRender
             Entity cameraEntity = mc.getCameraEntity() != null ? mc.getCameraEntity() : mc.player;
             VoxelShape shape = mc.level.getBlockState(pos).getShape(mc.level, pos, CollisionContext.of(cameraEntity));
 
-            if (shape.isEmpty()) from = shape.bounds().move(pos);
+            if (!shape.isEmpty()) from = shape.bounds().move(pos);
         }
 
         return new AreaAnimation(from, to);

@@ -15,6 +15,7 @@ public class ServerConfig
 
     public static final ModConfigSpec.DoubleValue CLAIM_AREA = BUILDER.comment("Claim Area, Area of the claim rectangle around the marker").defineInRange("claimArea", 96.0, 64.0, 256.0);
     public static final ModConfigSpec.IntValue ADD_MEMBER_TIMEOUT = BUILDER.comment("Member add timeout, How long in ticks does the marker wait for a member before timeout").defineInRange("addMemberTimeout", 300, 100, 1200);
+    public static final ModConfigSpec.IntValue MAX_NUMBER_CLAIMS = BUILDER.comment("Max number of claims per team").defineInRange("maxNumberOfClaims", 2, 1, 10);
 
     static
     {
@@ -23,9 +24,9 @@ public class ServerConfig
     }
 
     public static final ModConfigSpec.LongValue TEAM_STANCE_COOLDOWN = BUILDER.comment("Team stance cooldown in minutes, How long should go by real world play time before changing stances").defineInRange("teamStanceCooldown", 360L, 60L, 720L);
-    public static final ModConfigSpec.DoubleValue MEMBER_COUNT_PERCENT = BUILDER.comment("Percentage of members, Percentage threshold for offline and raiding protection as well as other internal math").defineInRange("protectionMemberCountPercent", 0.5, 0.25, 1.0);
-    public static final ModConfigSpec.DoubleValue MEMBER_VOTE_PERCENT = BUILDER.comment("Percentage for votes, Percentage for when the vote is considered passed").defineInRange("protectionMemberCountPercent", 0.5, 0.25, 1.0);
-    public static final ModConfigSpec.IntValue TEAM_VOTE_TICKS = BUILDER.comment("Team vote duration in ticks, How long should the vote window remain open in ticks").defineInRange("teamStanceCooldown", 600, 200, 6000);
+    public static final ModConfigSpec.DoubleValue MEMBER_COUNT_PERCENT = BUILDER.comment("Percentage of members, Percentage threshold for offline and raiding protection as well as other internal math").defineInRange("memberCountPercent", 0.5, 0.25, 1.0);
+    public static final ModConfigSpec.DoubleValue MEMBER_VOTE_PERCENT = BUILDER.comment("Percentage for votes, Percentage for when the vote is considered passed").defineInRange("memberVotePercent", 0.5, 0.25, 1.0);
+    public static final ModConfigSpec.IntValue TEAM_VOTE_TICKS = BUILDER.comment("Team vote duration in ticks, How long should the vote window remain open in ticks").defineInRange("teamVoteCooldown", 600, 200, 6000);
 
     static
     {

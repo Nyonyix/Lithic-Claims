@@ -1,5 +1,6 @@
 package com.nyonyix.lithicclaims.command;
 
+import com.ibm.icu.impl.duration.DurationFormatter;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -14,7 +15,9 @@ import com.nyonyix.lithicclaims.command.arguments.LithicClaimsTeamArgument;
 import com.nyonyix.lithicclaims.command.arguments.LithicClaimsVoteArgument;
 import com.nyonyix.lithicclaims.data.Stance;
 import com.nyonyix.lithicclaims.data.TeamVote;
+import com.nyonyix.lithicclaims.data.attachment.PlayerAttachment;
 import com.nyonyix.lithicclaims.data.manager.ClaimManager;
+import com.nyonyix.lithicclaims.data.manager.PlayerManager;
 import com.nyonyix.lithicclaims.data.manager.TeamManager;
 import com.nyonyix.lithicclaims.data.record.Claim;
 import com.nyonyix.lithicclaims.data.record.Team;
@@ -27,6 +30,7 @@ import net.minecraft.commands.Commands;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.commands.arguments.coordinates.BlockPosArgument;
 import net.minecraft.commands.arguments.coordinates.Coordinates;
+import net.minecraft.commands.arguments.selector.EntitySelector;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
@@ -38,7 +42,10 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.fml.ModList;
 import net.neoforged.neoforge.common.UsernameCache;
+import org.apache.commons.lang3.time.DurationFormatUtils;
+import org.apache.logging.log4j.core.jmx.Server;
 
+import javax.swing.*;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -49,6 +56,8 @@ public class LithicClaimsCommands
     @FunctionalInterface
     private interface ClaimRun {int run(CommandContext<CommandSourceStack> context, Claim claim) throws CommandSyntaxException;}
     @FunctionalInterface
+    private interface PlayerRun {int run(CommandContext<CommandSourceStack> context, Player claim) throws CommandSyntaxException;}
+    @FunctionalInterface
     private interface TeamRun {int run(CommandContext<CommandSourceStack> context, Team team) throws CommandSyntaxException;}
 
     // value == null takes no value arg
@@ -57,10 +66,15 @@ public class LithicClaimsCommands
 
     // value == null takes no value arg
     // bare == null must have args
+    private record PlayerCommand(Supplier<RequiredArgumentBuilder<CommandSourceStack, ?>> value, PlayerRun bare, PlayerRun action){}
+
+    // value == null takes no value arg
+    // bare == null must have args
     // explicitOp has trailing team argument and requires op or P2
     private record TeamCommand(Supplier<RequiredArgumentBuilder<CommandSourceStack, ?>> value, TeamRun bare, TeamRun action, boolean explicitOp) {}
 
     private static final Map<String, ClaimCommand> CLAIM_COMMANDS = new HashMap<>();
+    private static final Map<String, PlayerCommand> PLAYER_COMMANDS = new HashMap<>();
     private static final Map<String, TeamCommand> TEAM_COMMANDS = new HashMap<>();
 
     private static final DynamicCommandExceptionType ERROR_CLAIM_NOT_FOUND = new DynamicCommandExceptionType(name -> Component.translatableEscape("lithicclaims.argument.claim.notFound", name));
@@ -76,6 +90,12 @@ public class LithicClaimsCommands
         CLAIM_COMMANDS.put("area", new ClaimCommand(() -> Commands.argument("radius", IntegerArgumentType.integer(32, 128)), LithicClaimsCommands::getArea, LithicClaimsCommands::setArea));
         CLAIM_COMMANDS.put("remove", new ClaimCommand(null, LithicClaimsCommands::remove, LithicClaimsCommands::remove));
         CLAIM_COMMANDS.put("info", new ClaimCommand(null, LithicClaimsCommands::info, LithicClaimsCommands::info));
+    }
+
+    static
+    {
+        PLAYER_COMMANDS.put("last_aggressive", new PlayerCommand(null, LithicClaimsCommands::playerLastAggressive, LithicClaimsCommands::playerLastAggressive));
+        PLAYER_COMMANDS.put("team", new PlayerCommand(null, LithicClaimsCommands::playerTeam, LithicClaimsCommands::playerTeam));
     }
 
     static
@@ -146,7 +166,7 @@ public class LithicClaimsCommands
                 .withStyle(style -> style
                         .withColor(ChatFormatting.GREEN)
                         .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, String.format("/tp @s %d %d %d", claim.location().getX(), claim.location().getY(), claim.location().getZ())))
-                        .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.translatable("lithicclaims.command.claim.Teleport"))));
+                        .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.translatable("lithicclaims.command.claim.teleport"))));
 
         return Component.literal("Claim: \n").withStyle(ChatFormatting.AQUA)
                 .append(Component.literal("Location: ").withStyle(ChatFormatting.AQUA)
@@ -255,6 +275,64 @@ public class LithicClaimsCommands
     }
 
     //
+    // Player Stuffs
+    //
+
+    private static void attachPlayer(LiteralArgumentBuilder<CommandSourceStack> parent, String name, PlayerCommand def)
+    {
+        RequiredArgumentBuilder<CommandSourceStack, EntitySelector> player = Commands.argument("player", EntityArgument.player()).requires(source -> source.hasPermission(Commands.LEVEL_GAMEMASTERS)).executes(context -> def.action().run(context, EntityArgument.getPlayer(context, "player")));
+        LiteralArgumentBuilder<CommandSourceStack> literal = Commands.literal(name);
+
+        if (def.bare() != null) literal.executes(context -> def.bare().run(context, context.getSource().getPlayerOrException()));
+
+        if (def.value() == null)
+        {
+            literal.then(player);
+        }
+        else
+        {
+            RequiredArgumentBuilder<CommandSourceStack, ?> value = def.value().get();
+            value.executes(context -> def.action().run(context, context.getSource().getPlayerOrException()));
+            value.then(player);
+            literal.then(value);
+        }
+
+        parent.then(literal);
+    }
+
+    private static String getUsername(UUID playerUUID)
+    {
+        return UsernameCache.containsUUID(playerUUID) ? UsernameCache.getLastKnownUsername(playerUUID) : "Unknown";
+    }
+
+    private static int playerLastAggressive(CommandContext<CommandSourceStack> context, Player player) throws CommandSyntaxException
+    {
+        PlayerAttachment data = PlayerManager.getPlayerData(player);
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.player.lastAggressive", getUsername(player.getUUID()), Duration.between(data.lastAggressive(), Instant.now()).toString()), false);
+        return 1;
+    }
+
+    private static int playerResetAggression(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
+    {
+        Player player = EntityArgument.getPlayer(context, "player");
+        PlayerAttachment data = PlayerManager.getPlayerData(player);
+
+        PlayerManager.saveAttachment(player, data.withLastAggressive(Instant.now().minus(Duration.ofMinutes(ServerConfig.TEAM_STANCE_COOLDOWN.getAsLong()))));
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.player.resetAggression", getUsername(player.getUUID())), false);
+        return 1;
+    }
+
+    private static int playerTeam(CommandContext<CommandSourceStack> context, Player player) throws CommandSyntaxException
+    {
+        Team team = TeamManager.getTeamByPlayer(context.getSource().getLevel(), player.getUUID());
+
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.player.team", team.name(), getUsername(player.getUUID())), false);
+        return 1;
+    }
+
+    //
     // Team Stuffs
     //
 
@@ -312,18 +390,26 @@ public class LithicClaimsCommands
         return Character.toUpperCase(name.charAt(0)) + name.substring(1).toLowerCase(Locale.ROOT);
     }
 
-    private static String parseInstant(Instant cooldown)
-    {
-        float stanceCooldownConfig = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsLong();
+//    private static String parseInstant(Instant cooldown)
+//    {
+//        float stanceCooldownConfig = (float) ServerConfig.TEAM_STANCE_COOLDOWN.getAsLong();
+//
+//        Duration cooldownDiff = Duration.between(Instant.now(), cooldown.plusSeconds(Math.round(stanceCooldownConfig * 60 * 60)));
+//        boolean ago = cooldownDiff.isNegative();
+//        long total = Math.abs(cooldownDiff.toSeconds());
+//        long h = total / 3600;
+//        long m = (total % 3600) / 60;
+//        long s = total % 60;
+//        String time = String.format("%dh, %dm, %ds", h, m, s);
+//        return ago ? time + " ago" : "until: " + time;
+//    }
 
-        Duration cooldownDiff = Duration.between(Instant.now(), cooldown.plusSeconds(Math.round(stanceCooldownConfig * 60 * 60)));
-        boolean ago = cooldownDiff.isNegative();
-        long total = Math.abs(cooldownDiff.toSeconds());
-        long h = total / 3600;
-        long m = (total % 3600) / 60;
-        long s = total % 60;
-        String time = String.format("%dh, %dm, %ds", h, m, s);
-        return ago ? time + " ago" : "until: " + time;
+    private static String formatDuationString(Duration dur)
+    {
+        long s = dur.getSeconds();
+        return DurationFormatUtils.formatDuration(dur.toMillis(), "HH:mm:ss");
+//        return DurationFormatUtils.formatDurationHMS(dur.toMillis());
+//        return String.format("%d:%02:%02d", s / 3600, (s % 3600) / 60, (s % 60));
     }
 
     private static Component teamInfo(Team team)
@@ -355,7 +441,8 @@ public class LithicClaimsCommands
 
     private static int getStance(CommandContext<CommandSourceStack> context, Team team)
     {
-        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.getStance", titleCase(team.stance())), false);
+        Duration remaining = Duration.ofMinutes(ServerConfig.TEAM_STANCE_COOLDOWN.getAsLong()).minusMillis(TeamManager.teamStancePlayTime(team).toMillis());
+        context.getSource().sendSuccess(() -> Component.translatable("lithicclaims.command.team.getStance", titleCase(team.stance()), formatDuationString(remaining.isNegative() ? Duration.ZERO : remaining)), false);
         return 1;
     }
 
@@ -404,7 +491,8 @@ public class LithicClaimsCommands
         {
             case ON_COOLDOWN ->
             {
-                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.lastStanceChange", TeamManager.teamStancePlayTime(team).toString()));
+                Duration remaining = Duration.ofMinutes(ServerConfig.TEAM_STANCE_COOLDOWN.getAsLong()).minusMillis(TeamManager.teamStancePlayTime(team).toMillis());
+                context.getSource().sendFailure(Component.translatable("lithicclaims.command.team.stancelastChange", formatDuationString(remaining.isNegative() ? Duration.ZERO : remaining)));
                 return 0;
             }
             case NOT_ALLOWED ->
@@ -580,6 +668,7 @@ public class LithicClaimsCommands
     {
         LiteralArgumentBuilder<CommandSourceStack> baseCommand = Commands.literal("lithic_claims");
         LiteralArgumentBuilder<CommandSourceStack> claimCommand = Commands.literal("claim").requires(source -> source.hasPermission(Commands.LEVEL_GAMEMASTERS));
+        LiteralArgumentBuilder<CommandSourceStack> playerCommand = Commands.literal("player");
         LiteralArgumentBuilder<CommandSourceStack> teamCommand = Commands.literal("team");
 
         for (Map.Entry<String, ClaimCommand> entry : CLAIM_COMMANDS.entrySet())
@@ -588,6 +677,13 @@ public class LithicClaimsCommands
         }
 
         claimCommand.then(Commands.literal("list").executes(LithicClaimsCommands::list));
+
+        for (Map.Entry<String, PlayerCommand> entry : PLAYER_COMMANDS.entrySet())
+        {
+            attachPlayer(playerCommand, entry.getKey(), entry.getValue());
+        }
+
+        playerCommand.then(Commands.literal("reset_aggression").requires(source -> source.hasPermission(Commands.LEVEL_GAMEMASTERS)).then(Commands.argument("player", EntityArgument.player()).executes(LithicClaimsCommands::playerResetAggression)));
 
         for (Map.Entry<String, TeamCommand> entry : TEAM_COMMANDS.entrySet())
         {
@@ -612,6 +708,7 @@ public class LithicClaimsCommands
         teamCommand.then(createCommand);
 
         baseCommand.then(claimCommand);
+        baseCommand.then(playerCommand);
         baseCommand.then(teamCommand);
         dispatcher.register(baseCommand);
     }
